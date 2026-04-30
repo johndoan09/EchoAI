@@ -2,7 +2,6 @@ package com.echoai.ui
 
 import android.content.Context
 import android.graphics.Canvas
-import android.graphics.Color
 import android.graphics.Paint
 import android.util.AttributeSet
 import android.view.View
@@ -14,7 +13,7 @@ import kotlin.math.sin
  * 2-D device-frame radar.
  *  - Vertical axis: front (top) ↔ back (bottom), driven by `frontBackBias`.
  *  - Horizontal axis: left ↔ right, driven by `azimuthDegrees`.
- *  - Each event is a dot colored by confidence (blue → red).
+ *  - Each event is a dot colored by urgency tier, sized by confidence.
  *
  * Currently device-frame only. When `WorldOrientationProvider` is wired, transform
  * each event's stored device-frame position into world frame and rotate the radar
@@ -105,7 +104,8 @@ class RadarView @JvmOverloads constructor(
             val ey = cy + yNorm * r * 0.82f
 
             val dotR = 14f + 22f * event.confidence.coerceIn(0f, 1f)
-            dotPaint.color = colorForConfidence(event.confidence)
+            dotPaint.color = event.urgency.color
+            dotPaint.alpha = 255
             canvas.drawCircle(ex, ey, dotR, dotPaint)
 
             val labelX = ex + dotR + 6f
@@ -113,13 +113,6 @@ class RadarView @JvmOverloads constructor(
             canvas.drawText(event.label, labelX, labelY, dotLabelShadowPaint)
             canvas.drawText(event.label, labelX, labelY, dotLabelPaint)
         }
-    }
-
-    private fun colorForConfidence(c: Float): Int {
-        val clamp = c.coerceIn(0f, 1f)
-        // Blue (240°) → cyan → green → yellow → red (0°)
-        val hue = 240f * (1f - clamp)
-        return Color.HSVToColor(floatArrayOf(hue, 0.85f, 1f))
     }
 
     companion object {

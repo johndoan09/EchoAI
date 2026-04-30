@@ -18,14 +18,17 @@ import com.echoai.audio.MultiStreamProbe
 import com.echoai.audio.StereoMicTest
 import com.echoai.databinding.ActivityMainBinding
 import com.echoai.diagnostics.DiagnosticsLogger
+import com.echoai.domain.EventTracker
 import com.echoai.domain.LocalizationResult
 import com.echoai.domain.SoundEvent
+import com.echoai.domain.UrgencyClassifier
 import com.echoai.ml.SoundClassifier
 import com.echoai.ml.StubSoundClassifier
 import com.echoai.ml.YamnetClassifier
 import com.echoai.pipeline.ClassificationStage
 import com.echoai.pipeline.FusionStage
 import com.echoai.pipeline.LocalizationStage
+import com.echoai.util.HapticManager
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.async
@@ -61,7 +64,11 @@ class MainActivity : AppCompatActivity() {
     }
     private val classificationStage by lazy { ClassificationStage(classifier) }
     private val localizationStage = LocalizationStage()
-    private val fusionStage = FusionStage()
+    private val urgencyClassifier by lazy { UrgencyClassifier(applicationContext) }
+    private val hapticManager by lazy { HapticManager(applicationContext) }
+    private val fusionStage by lazy {
+        FusionStage(EventTracker(urgencyClassifier = urgencyClassifier))
+    }
 
     private var pipelineJob: Job? = null
     private var liveActive = false
@@ -127,6 +134,7 @@ class MainActivity : AppCompatActivity() {
                     val frame = processWindow(window)
                     binding.results.text = frame.text
                     binding.radar.setEvents(frame.events)
+                    hapticManager.vibrateForHighest(frame.events)
                 }
             }
         }
@@ -245,9 +253,10 @@ class MainActivity : AppCompatActivity() {
             val ageMs = (window.captureTimestampNanos - e.firstSeenTimestampNanos) / 1_000_000
             val az = e.devicePosition.azimuthDegrees()
             val azText = if (az != null) "az=%+5.1f°".format(az) else "az=  ?  "
+            val tag = "[%-8s]".format(e.urgency.name)
             appendLine(
-                "  %-16s ${bar(e.confidence, 1f)}  fb=%+.2f  %s  age=%4dms".format(
-                    e.label.take(16), e.devicePosition.frontBackBias, azText, ageMs
+                "  $tag %-14s ${bar(e.confidence, 1f)}  fb=%+.2f  %s  %4dms".format(
+                    e.label.take(14), e.devicePosition.frontBackBias, azText, ageMs
                 )
             )
         }

@@ -8,6 +8,7 @@ package com.echoai.domain
  * Not thread-safe. Call `update`/`snapshot` from the same coroutine.
  */
 class EventTracker(
+    private val urgencyClassifier: UrgencyClassifier? = null,
     private val staleAfterNanos: Long = 3_000_000_000L,    // 3 s
     private val refreshConfidenceThreshold: Float = 0.20f,
 ) {
@@ -35,10 +36,12 @@ class EventTracker(
             sampleRate = localization.sampleRate,
         )
 
+        val urgency = urgencyClassifier?.classify(top.label) ?: Urgency.LOW
         val existing = active[top.label]
         active[top.label] = if (existing != null) {
             existing.copy(
                 confidence = top.confidence,
+                urgency = urgency,
                 lastSeenTimestampNanos = now,
                 devicePosition = devicePos,
                 worldOrientation = localization.worldOrientation,
@@ -47,6 +50,7 @@ class EventTracker(
             SoundEvent(
                 label = top.label,
                 confidence = top.confidence,
+                urgency = urgency,
                 firstSeenTimestampNanos = now,
                 lastSeenTimestampNanos = now,
                 devicePosition = devicePos,
@@ -55,10 +59,13 @@ class EventTracker(
         }
     }
 
-    /** Returns currently-active events sorted by recency (most-recently-refreshed first). */
+    /** Returns currently-active events sorted by urgency (CRITICAL first), then recency. */
     fun snapshot(asOfNanos: Long = System.nanoTime()): List<SoundEvent> {
         evictStale(asOfNanos)
-        return active.values.sortedByDescending { it.lastSeenTimestampNanos }
+        return active.values.sortedWith(
+            compareByDescending<SoundEvent> { it.urgency.ordinalRank }
+                .thenByDescending { it.lastSeenTimestampNanos }
+        )
     }
 
     private fun evictStale(nowNanos: Long) {
