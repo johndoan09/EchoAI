@@ -47,6 +47,7 @@ data class SoundEvent(
     val lastSeenTimestampNanos: Long,
     val devicePosition: DevicePosition,
     val worldOrientation: FloatArray?,
+    val isPrioritized: Boolean = false,
 )
 
 data class DevicePosition(

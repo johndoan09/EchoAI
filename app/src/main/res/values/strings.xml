@@ -1,16 +1,17 @@
 <resources>
     <string name="app_name">echoAI</string>
-    <string name="app_tagline">Stereo mic capability test</string>
-    <string name="start_live">Start live capture</string>
-    <string name="stop_live">Stop live capture</string>
+    <string name="app_tagline">Hear what matters</string>
+    <string name="start_live">Start Listening</string>
+    <string name="stop_live">Stop Listening</string>
     <string name="live_starting">Starting capture…</string>
-    <string name="live_idle">Live capture is stopped. Tap Start to begin.</string>
-    <string name="run_stereo_test">Record 2 s of stereo audio</string>
-    <string name="probe_mic_capabilities">Probe device mic capabilities</string>
-    <string name="sweep_matrix">Probe 3 + 4 stream concurrency</string>
-    <string name="recording_in_progress">Recording 2 s — clap or speak on each side of the phone…</string>
-    <string name="probing_mics">Probing audio inputs and active mics…</string>
-    <string name="sweeping_matrix">Sweeping combinations — keep making noise…</string>
-    <string name="results_placeholder">Tap the button to capture 2 seconds of CHANNEL_IN_STEREO at 16 kHz.\n\nTo verify true L/R routing, run the test three times: silent, tapping the top mic, then tapping the bottom mic. The ITD lag and ILD sign should swing.</string>
-    <string name="mic_permission_denied">Microphone permission denied. Grant it in Settings → Apps → echoAI → Permissions to run the test.</string>
+    <string name="live_idle">Tap Start to begin listening.</string>
+    <string name="listening_no_sounds">Listening… no sounds detected yet.</string>
+    <string name="listening_one_sound">Listening… detected: %1$s</string>
+    <string name="listening_n_sounds">Listening… %1$d sounds detected</string>
+    <string name="detected_sounds">Detected Sounds</string>
+    <string name="edit_profile">Edit</string>
+    <string name="profile_city">City</string>
+    <string name="profile_home">Home</string>
+    <string name="profile_office">Office</string>
+    <string name="mic_permission_denied">Microphone permission denied. Grant it in Settings → Apps → echoAI → Permissions.</string>
 </resources>
