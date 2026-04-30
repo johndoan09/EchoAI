@@ -1,0 +1,4 @@
+<resources>
+    <string name="app_name">echoAI</string>
+    <string name="app_tagline">On-device sound awareness — bootstrap stage.</string>
+</resources>
