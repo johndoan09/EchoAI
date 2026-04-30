@@ -1,4 +1,16 @@
 <resources>
     <string name="app_name">echoAI</string>
-    <string name="app_tagline">On-device sound awareness — bootstrap stage.</string>
+    <string name="app_tagline">Stereo mic capability test</string>
+    <string name="start_live">Start live capture</string>
+    <string name="stop_live">Stop live capture</string>
+    <string name="live_starting">Starting capture…</string>
+    <string name="live_idle">Live capture is stopped. Tap Start to begin.</string>
+    <string name="run_stereo_test">Record 2 s of stereo audio</string>
+    <string name="probe_mic_capabilities">Probe device mic capabilities</string>
+    <string name="sweep_matrix">Probe 3 + 4 stream concurrency</string>
+    <string name="recording_in_progress">Recording 2 s — clap or speak on each side of the phone…</string>
+    <string name="probing_mics">Probing audio inputs and active mics…</string>
+    <string name="sweeping_matrix">Sweeping combinations — keep making noise…</string>
+    <string name="results_placeholder">Tap the button to capture 2 seconds of CHANNEL_IN_STEREO at 16 kHz.\n\nTo verify true L/R routing, run the test three times: silent, tapping the top mic, then tapping the bottom mic. The ITD lag and ILD sign should swing.</string>
+    <string name="mic_permission_denied">Microphone permission denied. Grant it in Settings → Apps → echoAI → Permissions to run the test.</string>
 </resources>

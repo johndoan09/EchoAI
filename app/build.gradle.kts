@@ -45,6 +45,11 @@ android {
             excludes += "/META-INF/{AL2.0,LGPL2.1}"
         }
     }
+
+    androidResources {
+        // TFLite models must stay uncompressed in the APK so they can be memory-mapped.
+        noCompress += "tflite"
+    }
 }
 
 dependencies {
@@ -54,4 +59,5 @@ dependencies {
     implementation(libs.androidx.constraintlayout)
     implementation(libs.androidx.lifecycle.runtime.ktx)
     implementation(libs.kotlinx.coroutines.android)
+    implementation(libs.tensorflow.lite)
 }
