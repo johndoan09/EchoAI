@@ -4,6 +4,7 @@ import android.content.Context
 import com.echoai.audio.AudioWindow
 import com.echoai.domain.LocalizationResult
 import com.echoai.ml.LabeledScore
+import com.echoai.pipeline.TransientGateResult
 import java.io.File
 import java.io.FileWriter
 import java.io.PrintWriter
@@ -37,6 +38,8 @@ class DiagnosticsLogger private constructor(
         full: LocalizationResult,
         sub: LocalizationResult,
         azimuthDeg: Float?,
+        gate: TransientGateResult,
+        usedSubCls: Boolean,
     ) {
         val cols = listOf(
             window.frameNumber.toString(),
@@ -54,6 +57,11 @@ class DiagnosticsLogger private constructor(
             sub.withinPairBottom.samples.toString(), "%.3f".format(sub.withinPairBottom.confidence),
             sub.withinPairBack.samples.toString(), "%.3f".format(sub.withinPairBack.confidence),
             azimuthDeg?.let { "%.2f".format(it) } ?: "",
+            if (gate.isTransient) "1" else "0",
+            if (gate.isForeground) "1" else "0",
+            "%.3f".format(gate.transientScore),
+            "%.2f".format(gate.snrDb),
+            if (usedSubCls) "1" else "0",
         )
         writer.println(cols.joinToString(","))
     }
@@ -77,7 +85,8 @@ class DiagnosticsLogger private constructor(
                 "bot_mono_rms,bk_mono_rms,fb_bias," +
                 "cross_lag_1s,cross_conf_1s,bot_lag_1s,bot_conf_1s,bk_lag_1s,bk_conf_1s," +
                 "cross_lag_250,cross_conf_250,bot_lag_250,bot_conf_250,bk_lag_250,bk_conf_250," +
-                "azimuth_deg"
+                "azimuth_deg," +
+                "gate_transient,gate_foreground,gate_transient_score,gate_snr_db,used_sub_cls"
 
         fun start(context: Context): DiagnosticsLogger {
             val dir = context.getExternalFilesDir(null) ?: context.filesDir

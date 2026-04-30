@@ -31,4 +31,7 @@ class FusionStage(
         tracker.update(classification, localization)
         return tracker.snapshot(asOfNanos = localization.captureTimestampNanos)
     }
+
+    /** Advance stale-event eviction without refreshing from a background-only window. */
+    fun snapshot(asOfNanos: Long): List<SoundEvent> = tracker.snapshot(asOfNanos = asOfNanos)
 }

@@ -26,6 +26,8 @@ import com.echoai.ml.YamnetClassifier
 import com.echoai.pipeline.ClassificationStage
 import com.echoai.pipeline.FusionStage
 import com.echoai.pipeline.LocalizationStage
+import com.echoai.pipeline.TransientGateResult
+import com.echoai.pipeline.TransientNoiseGate
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.async
@@ -61,6 +63,7 @@ class MainActivity : AppCompatActivity() {
     }
     private val classificationStage by lazy { ClassificationStage(classifier) }
     private val localizationStage = LocalizationStage()
+    private val transientGate = TransientNoiseGate()
     private val fusionStage = FusionStage()
 
     private var pipelineJob: Job? = null
@@ -157,12 +160,34 @@ class MainActivity : AppCompatActivity() {
     private suspend fun processWindow(window: AudioWindow): Frame = coroutineScope {
         val classifyJob = async(Dispatchers.Default) { classificationStage.classify(window) }
         val localizeJob = async(Dispatchers.Default) { localizationStage.localizeMultiScale(window) }
+        val gateJob = async(Dispatchers.Default) { transientGate.analyze(window) }
         val classification = classifyJob.await()
         val multi = localizeJob.await()
-        val events = withContext(Dispatchers.Default) {
-            fusionStage.process(classification, multi.full)
+        val gate = gateJob.await()
+
+        // Transient path: re-classify the peak-energy 250 ms sub-window, zero-padded to
+        // 15 600 samples. A 150 ms clap fills ~2 of YAMNet's internal frames; in the full
+        // 1 s window the other ~12 frames are speech, so speech wins the mean-pool. In the
+        // 250 ms slice those 12 frames are silence (zeros) — the clap wins instead.
+        val usedSubCls = gate.isTransient && multi.subFrameCount > 0
+        val effectiveClassification = if (usedSubCls) {
+            withContext(Dispatchers.Default) {
+                classificationStage.classifySlice(window, multi.subStartFrame, multi.subFrameCount)
+            }
+        } else {
+            classification
         }
-        // Compute per-channel RMS once for both render + diagnostics.
+        val selectedLocalization = if (gate.isTransient) multi.sub else multi.full
+
+        // Only push to the tracker on foreground windows; background windows just evict stale events.
+        val events = withContext(Dispatchers.Default) {
+            if (gate.isForeground) {
+                fusionStage.process(effectiveClassification, selectedLocalization)
+            } else {
+                fusionStage.snapshot(asOfNanos = window.captureTimestampNanos)
+            }
+        }
+
         val rmsBL = rmsOf(window.bottomLeft)
         val rmsBR = rmsOf(window.bottomRight)
         val rmsKL = rmsOf(window.backLeft)
@@ -171,17 +196,19 @@ class MainActivity : AppCompatActivity() {
 
         diagnosticsLogger?.log(
             window = window,
-            topLabel = classification.topK.firstOrNull(),
+            topLabel = effectiveClassification.topK.firstOrNull(),
             rmsBl = rmsBL, rmsBr = rmsBR, rmsKl = rmsKL, rmsKr = rmsKR,
             full = multi.full,
             sub = multi.sub,
             azimuthDeg = az,
+            gate = gate,
+            usedSubCls = usedSubCls,
         )
 
         Frame(
             text = renderLive(
-                window, classification.topK, multi.full, multi.sub, events,
-                rmsBL, rmsBR, rmsKL, rmsKR,
+                window, effectiveClassification.topK, multi.full, multi.sub, events,
+                rmsBL, rmsBR, rmsKL, rmsKR, gate, usedSubCls,
             ),
             events = events,
         )
@@ -194,8 +221,16 @@ class MainActivity : AppCompatActivity() {
         sub: LocalizationResult,
         events: List<SoundEvent>,
         rmsBL: Float, rmsBR: Float, rmsKL: Float, rmsKR: Float,
+        gate: TransientGateResult,
+        usedSubCls: Boolean,
     ): String = buildString {
-        appendLine("LIVE  window #${window.frameNumber}  rate=${window.sampleRate}Hz  backend=$classifierBackend")
+        val gateTag = when {
+            gate.isTransient -> "TRANSIENT${if (usedSubCls) "*" else ""}"
+            gate.isForeground -> "foreground"
+            else -> "background"
+        }
+        appendLine("LIVE  window #${window.frameNumber}  rate=${window.sampleRate}Hz  backend=$classifierBackend  [$gateTag]")
+        appendLine("  gate  score=%.2f  snr=%+.1fdB  (* = sub-window re-classified)".format(gate.transientScore, gate.snrDb))
         appendLine()
 
         appendLine("Channels (RMS, max=${RMS_BAR_MAX}):")
