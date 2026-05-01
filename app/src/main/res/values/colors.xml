@@ -31,9 +31,9 @@
     <color name="urgency_medium_bg">#24A8880A</color>
     <color name="urgency_medium_text">#876C08</color>
 
-    <color name="urgency_low">#2A7FC4</color>
-    <color name="urgency_low_bg">#242A7FC4</color>
-    <color name="urgency_low_text">#1F65A0</color>
+    <color name="urgency_low">#2F8F5C</color>
+    <color name="urgency_low_bg">#242F8F5C</color>
+    <color name="urgency_low_text">#226B45</color>
 
     <!-- Radar -->
     <color name="radar_ring_idle">#1A000000</color>

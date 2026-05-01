@@ -118,11 +118,15 @@ class MainActivity : AppCompatActivity() {
     private val historyManager by lazy { SoundHistoryManager(applicationContext) }
     private val pinnedAlertTracker by lazy { PinnedAlertTracker(applicationContext) }
 
-    // BeliefDistribution is fed `bot_ild` (the strong within-pair ILD signal that captures
-    // long-axis source direction). Positive bot_ild = source toward BOTTOM of phone
-    // (deviceAngle ≈ 180°), so biasScale is negative so that cos(180°)*biasScale > 0.
-    // decayRate = 0.01 per update at 8 Hz ≈ 0.08/s effective decay.
-    private val belief = BeliefDistribution(
+    // One BeliefDistribution per YAMNet label. Each window's `bot_ild` + yaw is routed to
+    // every confident label's belief (multi-label noisy-OR pooling); everyone else decays
+    // to uniform. Over time each label converges independently to its source's world-frame
+    // direction. Positive bot_ild = source toward BOTTOM of phone (deviceAngle ≈ 180°), so
+    // biasScale is negative so that cos(180°)*biasScale > 0. decayRate = 0.01 per update
+    // at 8 Hz ≈ 0.08/s effective decay.
+    private val beliefMap = mutableMapOf<String, BeliefDistribution>()
+
+    private fun newBelief() = BeliefDistribution(
         biasScale = -0.5f,
         measurementSigma = 0.25f,
         decayRate = 0.01f,
@@ -686,7 +690,7 @@ class MainActivity : AppCompatActivity() {
         binding.radarView.setListening(true)
 
         diagnosticsLogger = DiagnosticsLogger.start(applicationContext)
-        belief.reset()
+        beliefMap.clear()
         lastClassification = null
         classificationFrameCounter = 0
         yawHistory.clear()
@@ -701,11 +705,19 @@ class MainActivity : AppCompatActivity() {
             repeatOnLifecycle(Lifecycle.State.STARTED) {
                 captureManager.windows.collectLatest { window ->
                     val frame = processWindow(window)
+                    val halos = frame.events.mapNotNull { event ->
+                        val b = frame.beliefsByLabel[event.label] ?: return@mapNotNull null
+                        RadarView.LabelHalo(
+                            label = event.label,
+                            snapshot = b.snapshot,
+                            peakWorldAngle = b.peakWorldAngle,
+                            urgencyColor = RadarView.urgencyColor(event.urgency),
+                        )
+                    }
                     binding.radarView.setData(
                         events = frame.events,
-                        belief = frame.beliefSnapshot,
+                        halos = halos,
                         phoneYawDegrees = frame.phoneYaw,
-                        peakWorldAngle = frame.beliefPeakAngle,
                     )
                     setRotateHintVisible(frame.showRotateHint)
                     hapticManager.vibrateForHighest(frame.events)
@@ -744,12 +756,16 @@ class MainActivity : AppCompatActivity() {
         if (startBackgroundMonitoring) startBackgroundMonitoringIfAllowed()
     }
 
+    private data class LabelBelief(
+        val snapshot: FloatArray,
+        val peakWorldAngle: Float,
+        val intensity: Float,
+    )
+
     private data class Frame(
         val events: List<SoundEvent>,
-        val beliefSnapshot: FloatArray,
+        val beliefsByLabel: Map<String, LabelBelief>,
         val phoneYaw: Float,
-        val beliefPeakAngle: Float,
-        val beliefIntensity: Float,
         val showRotateHint: Boolean,
     )
 
@@ -782,24 +798,33 @@ class MainActivity : AppCompatActivity() {
         // emissions than the full-window ILD (consecutive 1 s windows share 87.5% of audio
         // at 8 Hz, so their full-window ILDs are highly correlated).
         val yaw = orientationProvider.yawDegrees()
-        // YAMNet has a literal "Silence" class (index 494) that dominates quiet windows
-        // with confidence ~0.95; the stub classifier emits the same label. Treat it as the
-        // absence of a real sound — scan topK for the first non-Silence label above the
-        // confidence floor instead of just looking at top-1.
-        val activeLabel = classification.topK.firstOrNull {
-            it.confidence > 0.3f && !it.label.equals(SILENCE_LABEL, ignoreCase = true)
+        // YAMNet's 42 consolidated groups are independent sigmoids — one real source often
+        // fires several related labels (Speech + Shouting/Yelling, Dog + Animal, …). Feeding
+        // this window's ILD + yaw to every confident label pools evidence across siblings
+        // instead of splitting it top-1-only. YAMNet's literal "Silence" class is excluded.
+        val activeLabels = classification.topK.filter {
+            it.confidence > BELIEF_UPDATE_THRESHOLD &&
+                !it.label.equals(SILENCE_LABEL, ignoreCase = true)
         }
-        val hasConfidentAudio = activeLabel != null
+        val hasConfidentAudio = activeLabels.isNotEmpty()
         if (yaw != null && hasConfidentAudio) {
-            belief.update(multi.sub.bottomIld, yaw)
+            for (entry in activeLabels) {
+                val bd = beliefMap.getOrPut(entry.label) { newBelief() }
+                bd.update(multi.sub.bottomIld, yaw)
+            }
         } else {
-            // Silence (or no IMU sample yet) — fade the belief faster toward uniform so a
-            // stale peak doesn't linger.
-            belief.decayOnly(SILENCE_DECAY_RATE)
+            // Silence (or no IMU sample yet) — fade every belief toward uniform so stale
+            // peaks don't linger. Non-winner decay during audio-active windows is handled
+            // naturally by BeliefDistribution.update's internal decay step the next time
+            // the label fires, plus the prune pass below.
+            for ((_, bd) in beliefMap) bd.decayOnly(SILENCE_DECAY_RATE)
         }
 
-        val peakAngle = belief.argmaxDegrees()
-        val intensity = belief.maxBelief()
+        // Evict beliefs that have effectively returned to uniform so the map stays bounded.
+        beliefMap.entries.removeAll { (_, bd) ->
+            val uniform = 1f / bd.snapshot().size
+            bd.maxBelief() <= uniform * BELIEF_PRUNE_THRESHOLD
+        }
 
         // Rotation hint: only nudges the user when there's an active sound but the phone
         // isn't moving — without rotation the rotational-aperture localizer can't pin down
@@ -809,6 +834,11 @@ class MainActivity : AppCompatActivity() {
         if (hasConfidentAudio && lowRotation) rotateHintFrames++ else rotateHintFrames = 0
         val showRotateHint = rotateHintFrames >= ROTATE_HINT_DEBOUNCE_FRAMES
 
+        val beliefsByLabel = beliefMap.mapValues { (_, bd) ->
+            LabelBelief(bd.snapshot(), bd.smoothedPeakDegrees(), bd.maxBelief())
+        }
+        val topEventBelief = events.firstOrNull()?.let { beliefsByLabel[it.label] }
+
         diagnosticsLogger?.log(
             window = window,
             topLabel = classification.topK.firstOrNull(),
@@ -817,16 +847,14 @@ class MainActivity : AppCompatActivity() {
             azimuthIldDeg = azX,
             azimuthLagDeg = azLag,
             phoneYawDeg = yaw,
-            beliefPeakDeg = peakAngle,
-            beliefIntensity = intensity,
+            beliefPeakDeg = topEventBelief?.peakWorldAngle,
+            beliefIntensity = topEventBelief?.intensity,
         )
 
         Frame(
             events = events,
-            beliefSnapshot = belief.snapshot(),
+            beliefsByLabel = beliefsByLabel,
             phoneYaw = yaw ?: 0f,
-            beliefPeakAngle = peakAngle,
-            beliefIntensity = intensity,
             showRotateHint = showRotateHint,
         )
     }
@@ -872,6 +900,12 @@ class MainActivity : AppCompatActivity() {
         private const val SILENCE_DECAY_RATE = 0.10f
         /** YAMNet class 494 / stub classifier label that means "no sound to localize". */
         private const val SILENCE_LABEL = "Silence"
+        /** Prune a belief once `maxBelief <= uniform * THRESHOLD` — it's effectively flat.
+         *  Keeps the per-label belief map bounded as labels stop firing. */
+        private const val BELIEF_PRUNE_THRESHOLD = 1.10f
+        /** Minimum confidence for a YAMNet label to contribute a belief update. Applied
+         *  per-label since multi-label noisy-OR pooling can pull in marginal siblings. */
+        private const val BELIEF_UPDATE_THRESHOLD = 0.3f
         /** Sliding window over which cumulative yaw change is summed for the rotate hint. */
         private const val YAW_WINDOW_NANOS = 2_000_000_000L
         /** Below this cumulative rotation over [YAW_WINDOW_NANOS], the phone counts as "still". */
