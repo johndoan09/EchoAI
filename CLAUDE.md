@@ -31,6 +31,46 @@ Deaf and hard-of-hearing individuals cannot rely on hearing to detect environmen
 
 ---
 
+## Development arc: v2 → current
+
+The `v2localization` branch was the working baseline: dual-CAMCORDER capture, YAMNet classification, GCC-PHAT localization, FusionStage event tracker, urgency map, radar UI with per-event dots, foreground capture only. The pipeline ran end-to-end but the localization signal was geometry-only and the spatial display was static.
+
+Since v2, the project has evolved along five parallel tracks. They are documented in detail in their respective sections below; this is the at-a-glance summary of *what changed* and *why*.
+
+### 1. Localization: per-window geometric → per-label rotational-aperture Bayesian belief
+- **Was (v2):** one `LocalizationResult` per window, attached to the top-1 YAMNet label. Direction was the geometric ITD lag from a single window — noisy, mirror-symmetric, and reset between windows.
+- **Now:** `BeliefDistribution` (1° world-frame bins) per active YAMNet label. Each window's `bot_ild` ILD measurement and the IMU-fused yaw from `RotationVectorProvider` update every confident label's belief via cosine-bias likelihood × Bayesian decay. As the user rotates the phone, evidence from multiple device-frame views accumulates into a single world-frame peak per label — the rotational-aperture trick that resolves the front/back ambiguity geometric ITD can't.
+- **Why:** raw within-pair ILD on this device's HAL is noisy and direction-ambiguous. Treating it as a likelihood and integrating across rotation is what makes a stable spatial track possible.
+
+### 2. Multi-label fusion: top-1 attribution → multi-label noisy-OR pooling
+- **Was:** top-1 YAMNet label gets the current direction; siblings discarded.
+- **Now:** YAMNet's 521 raw classes are consolidated to 42 application-meaningful groups via `assets/yamnet_consolidation_map.json`. Per-group score is **top-k noisy-OR** over member sigmoid scores (top-3 by default), so co-firing siblings (Music + Classical, Dog + Animal, Speech + Shouting) compound into one strong group score instead of splitting evidence. Every group above the confidence threshold receives a belief update each window.
+- **Why:** YAMNet is independent-sigmoid multi-label. Top-1 attribution effectively threw away the rest. Noisy-OR + per-label belief means a real sound — even if it triggers three sibling labels — converges to a single world-frame direction across all of them.
+
+### 3. UI: static dots → per-label belief halos with IMU-anchored peak arrows
+- **Was:** `RadarView` drew per-event dots positioned by ILD (Y-axis only), color-coded by urgency.
+- **Now:** every active label renders its own **belief halo** — an arc segment per bin (alpha modulated by belief intensity) plus a peak-marker arrow at the smoothed argmax — all tinted by urgency color. World-frame angles are rotated by `-phoneYawDegrees` every frame at ~60 fps via a `Choreographer` callback so the halos stay visually anchored to the world as the phone turns. Per-event chips snap to the halo peak once the belief is sharp enough to trust; otherwise they fall back to the legacy ILD-only Y-axis position.
+- **Why:** geometry from one window is unreliable; the halo is a literal visualization of *what the model believes about direction*, integrated over rotation. The user sees the system's confidence directly.
+
+### 4. Personalization & alert lifecycle
+- **Scene profiles** (`SoundProfile`, `ProfileManager`, `ProfileActivity`): user-managed list of profiles, each with a priority-label set and per-label urgency overrides. `FusionStage.applyProfile` translates these into `EventTracker` filters. The "Default" preset checks all 42 groups; users can create lighter profiles ("Home", "Office", "Café") that subscribe to only the labels they care about and re-prioritize per context. Profiles are draggable/reorderable and persist in `SharedPreferences`.
+- **Pinned alerts** (`PinnedAlertTracker`): HIGH/CRITICAL events go into a persistent unacknowledged set keyed on `(label, urgency)`. They survive app dismiss/restart and stay visible until the user explicitly clears them — so an alert that fired while the user was looking away or away from the phone isn't silently lost.
+- **Sound history** (`SoundHistoryManager`): rolling 24-hour log of HIGH/CRITICAL detections with per-event profile context, viewable in `HistoryActivity`. Same-label events within a dedup window collapse to a single entry to keep the log readable.
+- **Urgency map customization**: `assets/urgency_map.json` is the default mapping; per-profile overrides layer on top. The `UrgencyPickerSheet` UI lets users reassign any of the 42 groups to any of the four tiers.
+
+### 5. Background passive monitoring
+- **Foreground service** `PassiveMonitoringService` (Android `foregroundServiceType="microphone"` with persistent notification): when the user puts the app in the background, `MainActivity` hands off to the service so the alert pipeline keeps running.
+- **Recent simplification (post-multilabel):** the passive service runs **classification only** — no `LocalizationStage`, no IMU, no radar UI. HIGH/CRITICAL detections still surface via system notifications + haptic patterns + history + pinned alerts; but localization is foreground-only because the radar view is the only place direction-of-arrival is consumed, and skipping it cuts background battery cost roughly in half (the GCC-PHAT correlation pass and the IMU sensor listener are the bulk of non-classification CPU).
+- **`AppForegroundTracker`**: arbitrates the hand-off — the service starts when the user backgrounds the app while listening, and is stopped before `MainActivity`'s pipeline restarts on resume.
+
+### Things that did *not* change
+- Dual-CAMCORDER capture topology and the "two `AudioRecord`, one per `BUILTIN_MIC` device address" recipe (still the only path that gives independent-stream stereo on the S25 Ultra).
+- YAMNet inference path (NNAPI delegate first, multi-threaded CPU fallback).
+- Diagnostic CSV logger format.
+- `AudioCaptureManager` window cadence (1 s windows, 50% overlap, 8 Hz emission).
+
+---
+
 ## Technical Architecture
 
 ### High-Level Components
@@ -352,31 +392,35 @@ Build in this order to enable incremental testing at each stage. Reflects the lo
 2. **[x] AudioCaptureManager (dual CAMCORDER)** — `AudioCaptureManager.kt`, emits `AudioWindow` via `SharedFlow` with 1 s windows / 50% overlap / ~200 ms warmup discard. World-orientation hook plumbed through `WorldOrientationProvider` (currently `NullWorldOrientation`).
 3. **[x] LocalizationStage with multi-scale** — `GccPhatLocalizer.kt` + `LocalizationStage.kt`. Cross-pair RMS ratio + cross-pair time-domain cross-correlation (~±100 sample search) + within-pair lag for each recorder (~±16 sample search). `localizeMultiScale` adds a 250 ms peak-energy sub-window pass alongside the 1 s pass for transient-event accuracy. Time-domain only; FFT/PHAT upgrade pending.
 4. **[x] ClassificationStage with TFLite YAMNet** — `SoundClassifier` interface; `YamnetClassifier` implementation loads `assets/yamnet.tflite` + `assets/yamnet_class_map.csv`, tries the NNAPI delegate first (Hexagon NPU), falls back to multi-threaded CPU. Mono downmix of all 4 channels feeds the model. `StubSoundClassifier` retained as a fallback when the model fails to load.
-5. **[x] FusionStage + EventTracker** — single-dominant-source attribution (top-1 YAMNet label gets the current `LocalizationResult` direction). Rolling tracker keyed on label, 3 s memory, drops events not refreshed.
-6. **[x] Live UI in MainActivity** — Start/Stop toggle; ASCII bar visualizations for per-channel RMS / front-back bias / azimuth / per-class confidences; `RadarView` shows active events as colored dots positioned by azimuth × front-back bias.
+5. **[x] FusionStage + EventTracker** — multi-label attribution (every confident YAMNet label gets the current direction). Rolling tracker keyed on label, 3 s memory, drops events not refreshed. Profile-aware: priority labels and urgency overrides applied via `applyProfile`.
+6. **[x] Live UI in MainActivity** — Start/Stop toggle; `RadarView` with per-label belief halos, peak arrows, and urgency-colored chips. Pinned alerts banner, scene-chip strip with reorder, history button, profile editor.
 7. **[x] CSV diagnostics** — `DiagnosticsLogger` writes per-window pipeline state (per-channel RMS, fb_bias, all six lag/confidence pairs at both scales, displayed azimuth) to `<app external files dir>/diag_<timestamp>.csv` while live capture is running. Pull via adb for offline analysis.
-8. **[ ] Urgency mapping** — `UrgencyClassifier.kt` + `assets/urgency_map.json`, ~50 curated YAMNet labels mapped to LOW/MEDIUM/HIGH/CRITICAL.
-9. **[ ] Foreground service migration** — wrap `AudioCaptureManager` in a `Service` with `foregroundServiceType="microphone"`, persistent notification. Both `AudioRecord` instances live under the same service.
-10. **[ ] HapticManager** — `VibrationEffect` patterns per urgency.
-11. **[ ] IMU integration** — implement `WorldOrientationProvider` against `Sensor.TYPE_ROTATION_VECTOR`. Add world-frame smoothing in `EventTracker`. See Future Work § "IMU integration".
-12. **[ ] Spectral-shadow front/back** — high-band energy ratio. Required to overcome CAMCORDER AGC's RMS-bias suppression. See Future Work.
-13. **[ ] Per-pair YAMNet (stage b)** — class-level front/back attribution. See Future Work.
-14. **[ ] Settings screen** — user-editable urgency map.
-15. **[ ] Polish & profiling** — end-to-end latency, NPU vs CPU benchmarks, accessibility review, A/B classification quality CAMCORDER vs MIC.
+8. **[x] Urgency mapping** — `UrgencyClassifier.kt` + `assets/urgency_map.json`, ~50 curated YAMNet labels mapped to LOW/MEDIUM/HIGH/CRITICAL. Per-profile overrides layer on top.
+9. **[x] Foreground service migration** — `PassiveMonitoringService` (`foregroundServiceType="microphone"`, persistent notification). Hand-off arbitrated by `AppForegroundTracker`. Service runs classification only; localization is foreground-only.
+10. **[x] HapticManager** — `VibrationEffect` patterns per urgency. HIGH = short warning buzz, CRITICAL = stronger repeated buzz, LOW/MEDIUM silent. Cooldown to avoid sustained buzz.
+11. **[x] IMU integration** — `RotationVectorProvider` reads `Sensor.TYPE_ROTATION_VECTOR` at SENSOR_DELAY_GAME and exposes yaw + quaternion via `WorldOrientationProvider`. Drives the per-label `BeliefDistribution` and the radar's world-frame halo rotation (60 fps via Choreographer).
+12. **[x] Bayesian belief distribution** — `BeliefDistribution` per YAMNet label. Cosine-bias likelihood + multiplicative decay-toward-uniform; `update(bot_ild, yaw)` per window. `EventTracker` derives world-frame DoA from the per-label argmax with a smoothed peak (`smoothedPeakDegrees` rate-limits step-to-step movement).
+13. **[x] Multi-label noisy-OR consolidation** — `YamnetConsolidationMap` collapses YAMNet's 521 raw classes into 42 application groups via top-k noisy-OR. Loaded from `assets/yamnet_consolidation_map.json`; falls back to raw 521 if loading fails.
+14. **[x] Personalization** — `ProfileManager` + `SoundProfile` (priority labels, per-label urgency overrides, drag-reorder). `ProfileActivity` UI for CRUD. Default preset checks all groups; user creates lighter context profiles.
+15. **[x] Pinned alerts + history** — `PinnedAlertTracker` (persistent HIGH/CRITICAL banners until dismissed). `SoundHistoryManager` (24 h rolling log, viewable in `HistoryActivity`).
+16. **[ ] Spectral-shadow front/back** — high-band energy ratio. Required to overcome CAMCORDER AGC's RMS-bias suppression. See Future Work.
+17. **[ ] Per-pair YAMNet (stage b)** — class-level front/back attribution. See Future Work.
+18. **[ ] Polish & profiling** — end-to-end latency, NPU vs CPU benchmarks, accessibility review, A/B classification quality CAMCORDER vs MIC.
 
 ### Sound classification + localization fusion
 
-YAMNet returns top-K labels for the entire window with no per-source segmentation. GCC-PHAT returns one dominant lag per channel pair. With concurrent overlapping sources, naively attaching one direction to all top-K labels is wrong (each label may originate from a different position).
+YAMNet returns top-K labels for the entire window with no per-source segmentation. The current pipeline pairs that with multi-label noisy-OR consolidation and a per-label rotational-aperture Bayesian belief — so each detected sound class accumulates its own world-frame direction independently, even when several classes co-fire from different positions.
 
-**Stage-(a) — single-dominant-source attribution + temporal accumulation [prototype]:**
-- Per window, take only the top-1 YAMNet label.
-- Attach the current localization estimate (cross-pair lag, within-pair lags, RMS bias).
-- Maintain a rolling event tracker keyed by label. When the same label re-appears with sufficient confidence, refresh its direction. Drop events that haven't been refreshed within 3 s.
-- Works because most real-world hazard windows have one dominant source. Only fails on simultaneous overlapping CRITICAL sources, which is rare.
+**Current — multi-label noisy-OR + per-label belief (shipped):**
+- YAMNet's 521 classes are consolidated into 42 application groups (`YamnetConsolidationMap`, top-k noisy-OR over member sigmoid scores).
+- Every group above `BELIEF_UPDATE_THRESHOLD = 0.3` receives a `BeliefDistribution.update(bot_ild, yaw)` for the current window. Inactive groups decay toward uniform; near-uniform beliefs are pruned to keep the per-label map bounded.
+- `EventTracker` keeps a rolling 3 s memory keyed by label; refreshes update direction; un-refreshed events drop.
+- Profile-aware filtering and urgency overrides applied via `FusionStage.applyProfile`.
+- Solves the original v2 problem (single-dominant-source attribution) by giving every co-firing class its own direction track instead of forcing them to share or compete.
 
-**Stage-(b) — per-pair classification [upgrade]:** run YAMNet twice per window — once on `bottomMono`, once on `backMono`. Compare per-class confidences across pairs. A class louder on one pair is likely on that side. Gives per-class front/back attribution without depending on a single GCC-PHAT lag. ~30 ms extra inference per window on NPU.
+**Stage-(b) — per-pair classification [next upgrade, not shipped]:** run YAMNet twice per window — once on `bottomMono`, once on `backMono`. For each detected class, the pair with higher confidence indicates which side of the device the source is on. Gives semantic front/back attribution without depending on continuous geometry. ~30 ms extra inference per window on NPU.
 
-**Stage-(c) and beyond — per-band GCC-PHAT, source separation:** out of scope for the prototype. The team's deep-learning approach (joint classification + localization) is the right theoretical answer for overlapping sources; this baseline exists for comparison and as the working demo.
+**Stage-(c) and beyond — per-band GCC-PHAT, source separation:** out of scope for the prototype. A deep-learning joint classification+localization approach is the right home for that complexity; this baseline exists as the working demo and a comparison floor.
 
 ---
 
@@ -415,14 +459,12 @@ The dual-CAMCORDER pipeline ships a working baseline. These are deferred upgrade
 
 ### IMU integration
 
-6. **Wire `Sensor.TYPE_ROTATION_VECTOR`** into `WorldOrientationProvider`
-    The rest of the pipeline already plumbs `worldOrientation: FloatArray?` through `AudioWindow → LocalizationResult → SoundEvent`. Implementation is a self-contained ~150 lines: `SensorManager` listener stores the latest fused quaternion in a volatile field; `snapshot()` returns a copy. Pass the implementation to `AudioCaptureManager`'s constructor — zero changes downstream.
+6. **Already shipped:** `RotationVectorProvider` wires `Sensor.TYPE_ROTATION_VECTOR` into `WorldOrientationProvider`. Yaw + quaternion expose live to `MainActivity` (per-window updates) and to `RadarView` directly (continuous Choreographer-driven refresh at ~60 fps). The whole `BeliefDistribution`-per-label design depends on this.
 
-7. **World-frame smoothing in `EventTracker`**
-    Once IMU lands: transform each refresh's device-frame azimuth into world frame using the snapshot quaternion, average the world-frame angle across the last N refreshes, transform back to current device frame for display. Suppresses single-window jitter without lagging when the sound source actually moves.
+7. **Already shipped (alternate form):** world-frame smoothing happens inside the per-label `BeliefDistribution` rather than `EventTracker`. Each window's measurement contributes to a Bayesian posterior over world-frame angle bins; rotation provides multiple device-frame views of the same world-frame source, which is what concentrates the posterior. `smoothedPeakDegrees` rate-limits the peak angle's step-to-step movement for display stability.
 
-8. **IMU-based artifact rejection**
-    A real source has a fixed world-frame direction. As the user rotates the phone, the device-frame DoA must rotate by the inverse rotation. If it doesn't (e.g., a HAL channel-bias artifact stays at the same device-frame angle no matter how the phone moves), gate it out of the tracker. Free artifact filter.
+8. **IMU-based artifact rejection [not shipped, next upgrade]**
+    A real source has a fixed world-frame direction. As the user rotates the phone, the device-frame DoA must rotate by the inverse rotation. If it doesn't (e.g., a HAL channel-bias artifact stays at the same device-frame angle no matter how the phone moves), gate it out of the tracker. Free artifact filter on top of the existing belief pipeline.
 
 ### Window-length experiments
 
@@ -447,12 +489,12 @@ These constants are placeholders; revisit with broader CSV data:
 - **CSV diagnostics** (`DiagnosticsLogger.kt`) writes one row per window to `<app-private external storage>/diag_<timestamp>.csv` whenever live capture is running. Columns capture both 1 s and 250 ms localization scales for A/B analysis, plus per-channel RMS for calibration checks. Pull with `adb -s <serial> pull "/storage/emulated/0/Android/data/com.echoai/files/<file>"`. **Use this before guessing at calibration values.**
 - **In-app diagnostic buttons** (Stereo mic test, mic capability probe, multi-stream concurrency probe) — kept around for re-running on different device units / firmware versions. The architecture lockdown was driven from these probes; treat them as the test suite for "is this device's HAL behaving like the S25 Ultra we calibrated against?"
 
-### Production-grade plumbing (still pending)
+### Production-grade plumbing — all shipped
 
-- **Foreground service migration.** Currently capture runs from `lifecycleScope`; backgrounding the app stops the pipeline. Wrap `AudioCaptureManager` in a `Service` with `foregroundServiceType="microphone"` and a persistent notification. Both `AudioRecord` instances live under the same service.
-- **Urgency mapping**: `UrgencyClassifier` + `assets/urgency_map.json`, ~50 curated YAMNet labels mapped to LOW/MEDIUM/HIGH/CRITICAL.
-- **Haptic patterns**: per the existing snippet earlier in this doc.
-- **Settings screen**: user-editable urgency map.
+- **Foreground service**: `PassiveMonitoringService` (`foregroundServiceType="microphone"`, persistent notification). `AppForegroundTracker` arbitrates the hand-off between foreground `MainActivity` and background service. Service runs classification only; localization is foreground-only to halve background battery cost.
+- **Urgency mapping**: `UrgencyClassifier` + `assets/urgency_map.json`. Per-profile overrides layer on top.
+- **Haptic patterns**: `HapticManager` — HIGH = short warning buzz, CRITICAL = stronger repeated buzz; LOW/MEDIUM silent. Cooldown to avoid sustained buzzing during repeated detections.
+- **Settings / personalization**: `ProfileActivity` with full profile CRUD (priority labels, urgency overrides, drag-reorder), backed by `ProfileManager` and `assets/urgency_map.json`. `UrgencyPickerSheet` lets users reassign any of the 42 groups to any of the four tiers per profile.
 
 ---
 
