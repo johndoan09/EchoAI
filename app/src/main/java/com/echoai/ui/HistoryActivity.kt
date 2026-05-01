@@ -65,9 +65,15 @@ class HistoryActivity : AppCompatActivity() {
                 top = rootStartTop + systemBars.top,
                 right = rootStartRight + systemBars.right,
             )
+            val navSafeHeight = (systemBars.bottom * 3) / 4
+            val grayHeight = systemBars.bottom / 4
             binding.bottomTabBar.updatePadding(
-                bottom = tabStartBottom + ((systemBars.bottom * 3) / 4)
+                bottom = tabStartBottom + (navSafeHeight - grayHeight).coerceAtLeast(0)
             )
+            binding.systemNavBarBackground.layoutParams =
+                binding.systemNavBarBackground.layoutParams.apply {
+                    height = grayHeight
+                }
             insets
         }
         ViewCompat.requestApplyInsets(binding.root)

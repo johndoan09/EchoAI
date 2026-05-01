@@ -27,6 +27,7 @@ import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.lifecycleScope
 import androidx.lifecycle.repeatOnLifecycle
 import androidx.recyclerview.widget.LinearLayoutManager
+import androidx.recyclerview.widget.RecyclerView
 import com.echoai.R
 import com.echoai.audio.AudioCaptureManager
 import com.echoai.audio.AudioWindow
@@ -144,6 +145,11 @@ class MainActivity : AppCompatActivity() {
         )
         binding.pinnedAlertsList.layoutManager = LinearLayoutManager(this)
         binding.pinnedAlertsList.adapter = pinnedAdapter
+        binding.pinnedAlertsList.addOnScrollListener(object : RecyclerView.OnScrollListener() {
+            override fun onScrolled(recyclerView: RecyclerView, dx: Int, dy: Int) {
+                updatePinnedScrollIndicatorPosition()
+            }
+        })
 
         binding.liveToggle.setOnClickListener { onLiveToggle() }
         binding.historyButton.setOnClickListener {
@@ -250,9 +256,15 @@ class MainActivity : AppCompatActivity() {
                 top = rootStartTop + systemBars.top,
                 right = rootStartRight + systemBars.right,
             )
+            val navSafeHeight = (systemBars.bottom * 3) / 4
+            val grayHeight = systemBars.bottom / 4
             binding.bottomTabBar.updatePadding(
-                bottom = tabStartBottom + ((systemBars.bottom * 3) / 4)
+                bottom = tabStartBottom + (navSafeHeight - grayHeight).coerceAtLeast(0)
             )
+            binding.systemNavBarBackground.layoutParams =
+                binding.systemNavBarBackground.layoutParams.apply {
+                    height = grayHeight
+                }
             insets
         }
         ViewCompat.requestApplyInsets(binding.root)
@@ -299,7 +311,7 @@ class MainActivity : AppCompatActivity() {
 
     private fun updatePinnedAlertListHeight(alertCount: Int) {
         val targetHeight = if (alertCount > PINNED_ALERT_SCROLL_THRESHOLD) {
-            (PINNED_ALERT_MAX_HEIGHT_DP * resources.displayMetrics.density).toInt()
+            (PINNED_ALERT_TWO_ITEM_LIST_HEIGHT_DP * resources.displayMetrics.density).toInt()
         } else {
             ViewGroup.LayoutParams.WRAP_CONTENT
         }
@@ -308,7 +320,37 @@ class MainActivity : AppCompatActivity() {
             params.height = targetHeight
             binding.pinnedAlertsList.layoutParams = params
         }
-        binding.pinnedAlertsList.isNestedScrollingEnabled = alertCount > PINNED_ALERT_SCROLL_THRESHOLD
+        val scrollable = alertCount > PINNED_ALERT_SCROLL_THRESHOLD
+        binding.pinnedAlertsList.isNestedScrollingEnabled = scrollable
+        binding.pinnedAlertsList.isVerticalScrollBarEnabled = scrollable
+        binding.pinnedAlertsScrollIndicator.visibility = if (scrollable) View.VISIBLE else View.GONE
+        binding.pinnedAlertsList.post { updatePinnedScrollIndicatorPosition() }
+    }
+
+    private fun updatePinnedScrollIndicatorPosition() {
+        if (binding.pinnedAlertsScrollIndicator.visibility != View.VISIBLE) return
+
+        val range = binding.pinnedAlertsList.computeVerticalScrollRange()
+        val extent = binding.pinnedAlertsList.computeVerticalScrollExtent()
+        val offset = binding.pinnedAlertsList.computeVerticalScrollOffset()
+        val maxOffset = (range - extent).coerceAtLeast(1)
+        val track = binding.pinnedAlertsScrollIndicator.parent as? View ?: return
+        val minThumbHeight = (PINNED_ALERT_SCROLL_THUMB_MIN_HEIGHT_DP * resources.displayMetrics.density).toInt()
+        val targetThumbHeight = if (range > 0) {
+            ((extent.toFloat() / range.toFloat()) * track.height * PINNED_ALERT_SCROLL_THUMB_SCALE).toInt()
+                .coerceIn(minThumbHeight, track.height)
+        } else {
+            track.height
+        }
+        val thumbParams = binding.pinnedAlertsScrollIndicator.layoutParams
+        if (thumbParams.height != targetThumbHeight) {
+            thumbParams.height = targetThumbHeight
+            binding.pinnedAlertsScrollIndicator.layoutParams = thumbParams
+        }
+        val maxTravel = (track.height - binding.pinnedAlertsScrollIndicator.height).coerceAtLeast(0)
+
+        binding.pinnedAlertsScrollIndicator.translationY =
+            maxTravel * (offset.toFloat() / maxOffset.toFloat())
     }
 
     private fun setRotateHintVisible(visible: Boolean, animate: Boolean = true) {
@@ -322,16 +364,28 @@ class MainActivity : AppCompatActivity() {
 
     private fun applyLiveToggleState(expanded: Boolean, animate: Boolean) {
         val dp = resources.displayMetrics.density
-        val targetBtnPadH = ((if (rotateHintVisible) 16 else if (expanded) 34 else 24) * dp).toInt()
-        val targetBtnPadV = ((if (rotateHintVisible) 4 else 12) * dp).toInt()
-        val targetContainerPadBottom = ((if (rotateHintVisible) 0 else if (expanded) 8 else 2) * dp).toInt()
-        val targetTextSize = if (rotateHintVisible) 13f else 15f
+        val targetBtnPadH = ((if (rotateHintVisible) 14 else if (expanded) 24 else 18) * dp).toInt()
+        val targetBtnPadV = ((if (rotateHintVisible) 3 else 8) * dp).toInt()
+        val targetContainerHeight = (
+            (if (expanded) LIVE_TOGGLE_CONTAINER_EXPANDED_HEIGHT_DP else LIVE_TOGGLE_CONTAINER_COMPACT_HEIGHT_DP) * dp
+        ).toInt()
+        val targetContainerPadBottom = (2 * dp).toInt()
+        val targetButtonTranslationY = if (expanded && !rotateHintVisible) {
+            -LIVE_TOGGLE_EXPANDED_OFFSET_Y_DP * dp
+        } else {
+            0f
+        }
+        val targetTextSize = if (rotateHintVisible) 12f else 14f
         binding.liveToggle.textSize = targetTextSize
 
         if (animate) {
             val fromPadH = binding.liveToggle.paddingLeft
             val fromPadV = binding.liveToggle.paddingTop
             val fromContainerPad = binding.liveToggleContainer.paddingBottom
+            val fromContainerHeight = binding.liveToggleContainer.height
+                .takeIf { it > 0 }
+                ?: binding.liveToggleContainer.layoutParams.height
+            val fromButtonTranslationY = binding.liveToggle.translationY
 
             ValueAnimator.ofFloat(0f, 1f).apply {
                 duration = 320
@@ -341,7 +395,15 @@ class MainActivity : AppCompatActivity() {
                     val padH = (fromPadH + (targetBtnPadH - fromPadH) * t).toInt()
                     val padV = (fromPadV + (targetBtnPadV - fromPadV) * t).toInt()
                     val contPad = (fromContainerPad + (targetContainerPadBottom - fromContainerPad) * t).toInt()
+                    val contHeight = (fromContainerHeight + (targetContainerHeight - fromContainerHeight) * t).toInt()
+                    val buttonTranslationY =
+                        fromButtonTranslationY + (targetButtonTranslationY - fromButtonTranslationY) * t
                     binding.liveToggle.setPadding(padH, padV, padH, padV)
+                    binding.liveToggle.translationY = buttonTranslationY
+                    binding.liveToggleContainer.layoutParams =
+                        binding.liveToggleContainer.layoutParams.apply {
+                            height = contHeight
+                        }
                     binding.liveToggleContainer.setPadding(
                         binding.liveToggleContainer.paddingLeft,
                         binding.liveToggleContainer.paddingTop,
@@ -353,6 +415,11 @@ class MainActivity : AppCompatActivity() {
             }
         } else {
             binding.liveToggle.setPadding(targetBtnPadH, targetBtnPadV, targetBtnPadH, targetBtnPadV)
+            binding.liveToggle.translationY = targetButtonTranslationY
+            binding.liveToggleContainer.layoutParams =
+                binding.liveToggleContainer.layoutParams.apply {
+                    height = targetContainerHeight
+                }
             binding.liveToggleContainer.setPadding(
                 binding.liveToggleContainer.paddingLeft,
                 binding.liveToggleContainer.paddingTop,
@@ -690,7 +757,12 @@ class MainActivity : AppCompatActivity() {
         /** Consecutive frames the (audio + still) condition must hold before showing the hint
          *  (~1.5 s at 8 Hz). Hides immediately when either condition flips. */
         private const val ROTATE_HINT_DEBOUNCE_FRAMES = 12
-        private const val PINNED_ALERT_SCROLL_THRESHOLD = 3
-        private const val PINNED_ALERT_MAX_HEIGHT_DP = 220
+        private const val PINNED_ALERT_SCROLL_THRESHOLD = 2
+        private const val PINNED_ALERT_TWO_ITEM_LIST_HEIGHT_DP = 144
+        private const val PINNED_ALERT_SCROLL_THUMB_MIN_HEIGHT_DP = 32
+        private const val PINNED_ALERT_SCROLL_THUMB_SCALE = 1.2f
+        private const val LIVE_TOGGLE_CONTAINER_COMPACT_HEIGHT_DP = 66
+        private const val LIVE_TOGGLE_CONTAINER_EXPANDED_HEIGHT_DP = 124
+        private const val LIVE_TOGGLE_EXPANDED_OFFSET_Y_DP = 12
     }
 }
