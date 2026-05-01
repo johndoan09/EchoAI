@@ -4,6 +4,7 @@ import android.Manifest
 import android.annotation.SuppressLint
 import android.content.pm.PackageManager
 import android.os.Bundle
+import android.view.View
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.content.ContextCompat
@@ -87,6 +88,10 @@ class MainActivity : AppCompatActivity() {
     private var lastClassification: ClassificationResult? = null
     private var classificationFrameCounter = 0
 
+    // Yaw history for rotation-rate tracking (recent samples, capped by time window).
+    private val yawHistory = ArrayDeque<Pair<Long, Float>>(24)
+    private var rotateHintFrames = 0
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         binding = ActivityMainBinding.inflate(layoutInflater)
@@ -148,6 +153,8 @@ class MainActivity : AppCompatActivity() {
         belief.reset()
         lastClassification = null
         classificationFrameCounter = 0
+        yawHistory.clear()
+        rotateHintFrames = 0
         binding.resetBelief.isEnabled = true
         orientationProvider.start()
         binding.radar.setOrientationProvider(orientationProvider)
@@ -164,6 +171,8 @@ class MainActivity : AppCompatActivity() {
                         phoneYawDegrees = frame.phoneYaw,
                         peakWorldAngle = frame.beliefPeakAngle,
                     )
+                    binding.rotateHint.visibility =
+                        if (frame.showRotateHint) View.VISIBLE else View.GONE
                 }
             }
         }
@@ -185,6 +194,7 @@ class MainActivity : AppCompatActivity() {
         binding.radar.setEvents(emptyList())
         binding.radar.setBelief(FloatArray(0), 0f, 0f)
         binding.resetBelief.isEnabled = false
+        binding.rotateHint.visibility = View.GONE
         val err = captureManager.lastErrorMessage()
         binding.results.text = when {
             err != null -> "Capture stopped — error: $err"
@@ -199,8 +209,8 @@ class MainActivity : AppCompatActivity() {
         val beliefSnapshot: FloatArray,
         val phoneYaw: Float,
         val beliefPeakAngle: Float,
-        val beliefRawPeak: Float,
         val beliefIntensity: Float,
+        val showRotateHint: Boolean,
     )
 
     private suspend fun processWindow(window: AudioWindow): Frame = coroutineScope {
@@ -232,18 +242,38 @@ class MainActivity : AppCompatActivity() {
         // emissions than the full-window ILD (consecutive 1 s windows share 87.5% of audio
         // at 8 Hz, so their full-window ILDs are highly correlated).
         val yaw = orientationProvider.yawDegrees()
+        // YAMNet has a literal "Silence" class (index 494) that dominates quiet windows
+        // with confidence ~0.95; the stub classifier emits the same label. Treat it as the
+        // absence of a real sound — scan topK for the first non-Silence label above the
+        // confidence floor instead of just looking at top-1.
         val topLabel = classification.topK.firstOrNull()
-        if (yaw != null && topLabel != null && topLabel.confidence > 0.3f) {
+        val activeLabel = classification.topK.firstOrNull {
+            it.confidence > 0.3f && !it.label.equals(SILENCE_LABEL, ignoreCase = true)
+        }
+        val hasConfidentAudio = activeLabel != null
+        if (yaw != null && hasConfidentAudio) {
             belief.update(multi.sub.bottomIld, yaw)
+        } else {
+            // Silence (or no IMU sample yet) — fade the belief faster toward uniform so a
+            // stale peak doesn't linger. update() reverts to the normal decayRate when
+            // sound returns, so no flag-flipping is needed.
+            belief.decayOnly(SILENCE_DECAY_RATE)
         }
 
-        // Compute belief readouts once. smoothedPeakDegrees advances internal EMA state,
-        // so it MUST only be called once per pipeline frame — calling it again from
-        // renderLive would double-step the smoother and re-introduce jitter.
-        // maxStepDeg=5 at 8 Hz ≈ 40°/s peak-marker travel speed.
-        val rawPeak = belief.argmaxDegrees()
-        val smoothedPeak = belief.smoothedPeakDegrees(maxStepDeg = 5f)
+        // Render the radar arrow at the raw belief argmax so it tracks measurement updates
+        // in real time (no rate-limited EMA). The Bayesian decay/likelihood step inside
+        // belief.update already provides temporal smoothing of the underlying distribution;
+        // an extra display-side EMA only added perceptible lag between the halo and arrow.
+        val peakAngle = belief.argmaxDegrees()
         val intensity = belief.maxBelief()
+
+        // Rotation hint: only nudges the user when there's an active sound but the phone
+        // isn't moving — without rotation the rotational-aperture localizer can't pin down
+        // a world-frame direction. Stays hidden during silence.
+        recordYaw(window.captureTimestampNanos, yaw)
+        val lowRotation = cumulativeRotationDegrees() < LOW_ROTATION_DEG
+        if (hasConfidentAudio && lowRotation) rotateHintFrames++ else rotateHintFrames = 0
+        val showRotateHint = rotateHintFrames >= ROTATE_HINT_DEBOUNCE_FRAMES
 
         diagnosticsLogger?.log(
             window = window,
@@ -253,21 +283,21 @@ class MainActivity : AppCompatActivity() {
             azimuthIldDeg = azX,
             azimuthLagDeg = azLag,
             phoneYawDeg = yaw,
-            beliefPeakDeg = smoothedPeak,
+            beliefPeakDeg = peakAngle,
             beliefIntensity = intensity,
         )
 
         Frame(
             text = renderLive(
                 window, classification.topK, multi.full, multi.sub, events, yaw,
-                rawPeak, smoothedPeak, intensity,
+                peakAngle, intensity,
             ),
             events = events,
             beliefSnapshot = belief.snapshot(),
             phoneYaw = yaw ?: 0f,
-            beliefPeakAngle = smoothedPeak,
-            beliefRawPeak = rawPeak,
+            beliefPeakAngle = peakAngle,
             beliefIntensity = intensity,
+            showRotateHint = showRotateHint,
         )
     }
 
@@ -278,8 +308,7 @@ class MainActivity : AppCompatActivity() {
         sub: LocalizationResult,
         events: List<SoundEvent>,
         yawDegrees: Float?,
-        beliefRawPeak: Float,
-        beliefSmoothedPeak: Float,
+        beliefPeakAngle: Float,
         beliefIntensity: Float,
     ): String = buildString {
         appendLine("DIAGNOSTIC  win #${window.frameNumber}  ${window.sampleRate}Hz  $classifierBackend")
@@ -289,9 +318,7 @@ class MainActivity : AppCompatActivity() {
 
         appendLine("IMU / belief:")
         appendLine("  phone yaw  ${yawDegrees?.let { "%6.1f°".format(it) } ?: "    ?  "}  (world heading of TOP edge)")
-        appendLine(
-            "  belief raw  ${"%6.1f°".format(beliefRawPeak)}  smooth ${"%6.1f°".format(beliefSmoothedPeak)}  i=${"%.3f".format(beliefIntensity)}"
-        )
+        appendLine("  belief peak  ${"%6.1f°".format(beliefPeakAngle)}  i=${"%.3f".format(beliefIntensity)}")
         appendLine()
 
         appendLine("Per-channel RMS (max ${RMS_BAR_MAX.toInt()}):")
@@ -383,6 +410,30 @@ class MainActivity : AppCompatActivity() {
         return sb.toString()
     }
 
+    private fun recordYaw(timestampNanos: Long, yawDeg: Float?) {
+        if (yawDeg == null) return
+        yawHistory.addLast(timestampNanos to yawDeg)
+        val cutoff = timestampNanos - YAW_WINDOW_NANOS
+        while (yawHistory.isNotEmpty() && yawHistory.first().first < cutoff) yawHistory.removeFirst()
+    }
+
+    /** Sum of absolute yaw deltas across the retained history, with shortest-arc wrapping. */
+    private fun cumulativeRotationDegrees(): Float {
+        if (yawHistory.size < 2) return 0f
+        var total = 0f
+        val iter = yawHistory.iterator()
+        var prev = iter.next().second
+        while (iter.hasNext()) {
+            val cur = iter.next().second
+            var d = cur - prev
+            if (d > 180f) d -= 360f
+            if (d < -180f) d += 360f
+            total += kotlin.math.abs(d)
+            prev = cur
+        }
+        return total
+    }
+
     companion object {
         /** RMS bar full-scale. CAMCORDER's AGC keeps speech around 1000–3000; 4000 gives
          *  visible response without saturating in normal use. */
@@ -392,6 +443,18 @@ class MainActivity : AppCompatActivity() {
         /** Run YAMNet on every Nth pipeline window. With HOP_FRAMES = 2000 (8 Hz), N=4
          *  gives 2 Hz classification while localization + belief update runs at full 8 Hz. */
         private const val CLASSIFY_EVERY_N = 4
+        /** Decay rate applied per silent window. 10× the normal 0.01 in BeliefDistribution
+         *  → ~57%/s convergence to uniform at 8 Hz, so the halo fades within ~2 s of silence. */
+        private const val SILENCE_DECAY_RATE = 0.10f
+        /** YAMNet class 494 / stub classifier label that means "no sound to localize". */
+        private const val SILENCE_LABEL = "Silence"
+        /** Sliding window over which cumulative yaw change is summed for the rotate hint. */
+        private const val YAW_WINDOW_NANOS = 2_000_000_000L
+        /** Below this cumulative rotation over [YAW_WINDOW_NANOS], the phone counts as "still". */
+        private const val LOW_ROTATION_DEG = 15f
+        /** Consecutive frames the (audio + still) condition must hold before showing the hint
+         *  (~1.5 s at 8 Hz). Hides immediately when either condition flips. */
+        private const val ROTATE_HINT_DEBOUNCE_FRAMES = 12
     }
 
     @SuppressLint("MissingPermission")

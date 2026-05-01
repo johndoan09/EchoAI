@@ -42,6 +42,7 @@ class RadarView @JvmOverloads constructor(
     private var phoneYawDegrees: Float = 0f
     private var peakWorldAngle: Float = 0f
     private val beliefArcRect = android.graphics.RectF()
+    private val arrowPath = android.graphics.Path()
 
     private val ringPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         style = Paint.Style.STROKE
@@ -282,12 +283,28 @@ class RadarView @JvmOverloads constructor(
             canvas.drawArc(beliefArcRect, canvasStart, sweepDeg, false, beliefArcPaint)
         }
 
-        // Peak marker: smoothed world-frame angle, converted to device-frame for display.
+        // Peak marker: world-frame angle converted to device-frame, drawn as a radial
+        // triangular arrow pointing outward from the user toward the source direction.
         val peakDeviceAngle = peakWorldAngle - phoneYawDegrees
         val peakRad = Math.toRadians((peakDeviceAngle - 90f).toDouble())
-        val px = cx + (haloRadius - 28f) * kotlin.math.cos(peakRad).toFloat()
-        val py = cy + (haloRadius - 28f) * kotlin.math.sin(peakRad).toFloat()
-        canvas.drawCircle(px, py, 12f, beliefPeakPaint)
+        val cosA = kotlin.math.cos(peakRad).toFloat()
+        val sinA = kotlin.math.sin(peakRad).toFloat()
+        val tipR = haloRadius - 8f
+        val baseR = haloRadius - 30f
+        val halfWidth = 12f
+        val tipX = cx + tipR * cosA
+        val tipY = cy + tipR * sinA
+        val baseCx = cx + baseR * cosA
+        val baseCy = cy + baseR * sinA
+        // Perpendicular unit vector to the radial direction → arrow base extends to the sides.
+        val perpX = -sinA
+        val perpY = cosA
+        arrowPath.reset()
+        arrowPath.moveTo(tipX, tipY)
+        arrowPath.lineTo(baseCx + halfWidth * perpX, baseCy + halfWidth * perpY)
+        arrowPath.lineTo(baseCx - halfWidth * perpX, baseCy - halfWidth * perpY)
+        arrowPath.close()
+        canvas.drawPath(arrowPath, beliefPeakPaint)
     }
 
     private fun colorForConfidence(c: Float): Int {

@@ -77,6 +77,19 @@ class BeliefDistribution(
         }
     }
 
+    /**
+     * Decay the distribution toward uniform without applying a measurement. Used during
+     * silence so a stale, peaky belief gradually washes out instead of latching. Default
+     * [rate] matches [decayRate] (idempotent with the decay step inside [update]); callers
+     * can pass a higher rate to fade the belief faster than the normal-update cadence.
+     */
+    fun decayOnly(rate: Float = decayRate) {
+        val uniform = 1f / numBins
+        for (i in bins.indices) {
+            bins[i] = bins[i] * (1f - rate) + uniform * rate
+        }
+    }
+
     /** World-frame angle (degrees) of the most-likely bin. */
     fun argmaxDegrees(): Float {
         var bestIdx = 0
