@@ -46,6 +46,7 @@ class ProfileManager(context: Context) {
                 priorityLabels = labels,
                 urgencyOverrides = overrides,
                 isPreset = isPreset,
+                checkAll = obj.optBoolean("check_all", false),
             )
         } catch (e: Exception) {
             if (isPreset) SoundProfile.PRESETS.first { it.id == id }
@@ -58,12 +59,11 @@ class ProfileManager(context: Context) {
         val overridesObj = JSONObject().apply {
             profile.urgencyOverrides.forEach { (label, urgency) -> put(label, urgency.name) }
         }
-        prefs.edit()
-            .putString(
-                "profile_${profile.id}",
-                JSONObject().put("labels", labelsArr).put("urgency_overrides", overridesObj).toString(),
-            )
-            .apply()
+        val json = JSONObject()
+            .put("labels", labelsArr)
+            .put("urgency_overrides", overridesObj)
+            .put("check_all", profile.checkAll)
+        prefs.edit().putString("profile_${profile.id}", json.toString()).apply()
         if (profile.id == _activeProfile.value.id) {
             _activeProfile.value = profile
         }
@@ -83,7 +83,7 @@ class ProfileManager(context: Context) {
     fun createProfile(name: String): SoundProfile {
         val id = UUID.randomUUID().toString()
         prefs.edit().putString("profile_name_$id", name).apply()
-        val profile = SoundProfile(id = id, name = name, priorityLabels = emptySet(), isPreset = false)
+        val profile = SoundProfile(id = id, name = name, priorityLabels = emptySet(), isPreset = false, checkAll = true)
         saveProfile(profile)
         saveCustomIds(loadCustomIds() + id)
         // Append to saved order if one exists

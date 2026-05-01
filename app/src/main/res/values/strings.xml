@@ -28,6 +28,8 @@
     <string name="history">History</string>
     <string name="no_history">No high-urgency sounds detected in the past 24 hours.</string>
     <string name="profile_subtitle"><![CDATA[%1$s · %2$d sounds]]></string>
+    <string name="check_all">Check All</string>
+    <string name="uncheck_all">Uncheck All</string>
     <string name="save_changes">Save Changes</string>
     <string name="cancel">Cancel</string>
     <string name="discard_changes">Discard</string>

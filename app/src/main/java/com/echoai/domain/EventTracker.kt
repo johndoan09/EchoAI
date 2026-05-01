@@ -20,6 +20,9 @@ class EventTracker(
 ) {
     private val active = mutableMapOf<String, SoundEvent>()
 
+    /** When true every label is treated as priority (profile has "all checked"). */
+    var matchAll: Boolean = false
+
     /** Labels the user has marked as priority for the active [SoundProfile]. */
     var priorityLabels: Set<String> = emptySet()
 
@@ -88,12 +91,14 @@ class EventTracker(
     private fun effectiveRank(event: SoundEvent): Int =
         event.urgency.ordinalRank
 
-    private fun isPriority(label: String): Boolean =
-        priorityLabels.any {
+    private fun isPriority(label: String): Boolean {
+        if (matchAll) return true
+        return priorityLabels.any {
             it.equals(label, ignoreCase = true) ||
                 label.contains(it, ignoreCase = true) ||
                 it.contains(label, ignoreCase = true)
         }
+    }
 
     private fun evictStale(nowNanos: Long) {
         val cutoff = nowNanos - staleAfterNanos

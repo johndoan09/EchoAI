@@ -31,6 +31,7 @@ class ProfileActivity : AppCompatActivity() {
     private lateinit var adapter: SoundLabelAdapter
     private var profileId = SoundProfile.DEFAULT_ID
 
+    private var allLabels: List<String> = emptyList()
     private var savedLabels: Set<String> = emptySet()
     private val pendingLabels = mutableSetOf<String>()
 
@@ -45,8 +46,6 @@ class ProfileActivity : AppCompatActivity() {
         profileManager = ProfileManager(applicationContext)
         val urgencyClassifier = UrgencyClassifier(applicationContext)
         val profile = profileManager.getProfile(profileId)
-        savedLabels = profile.priorityLabels
-        pendingLabels.addAll(savedLabels)
 
         binding.profileTitle.text = getString(R.string.tab_scene_profile)
         binding.backButton.setOnClickListener {
@@ -82,10 +81,23 @@ class ProfileActivity : AppCompatActivity() {
             }
         })
 
+        binding.checkAllButton.setOnClickListener {
+            pendingLabels.clear()
+            pendingLabels.addAll(allLabels)
+            adapter.resetTo(allLabels.toSet())
+            updateSaveBar()
+        }
+
+        binding.uncheckAllButton.setOnClickListener {
+            pendingLabels.clear()
+            adapter.resetTo(emptySet())
+            updateSaveBar()
+        }
+
         binding.resetDefaultsButton.setOnClickListener {
             val current = profileManager.getProfile(profileId)
             profileManager.saveProfile(current.copy(urgencyOverrides = emptyMap()))
-            adapter.setData(adapter.currentLabels(), current.priorityLabels, emptyMap())
+            adapter.setData(allLabels, pendingLabels, emptyMap())
         }
 
         binding.cancelChangesButton.setOnClickListener {
@@ -97,7 +109,7 @@ class ProfileActivity : AppCompatActivity() {
 
         binding.saveChangesButton.setOnClickListener {
             val current = profileManager.getProfile(profileId)
-            profileManager.saveProfile(current.copy(priorityLabels = pendingLabels.toSet()))
+            profileManager.saveProfile(current.copy(priorityLabels = pendingLabels.toSet(), checkAll = false))
             savedLabels = pendingLabels.toSet()
             adapter.commitSort()
             updateSaveBar()
@@ -121,7 +133,12 @@ class ProfileActivity : AppCompatActivity() {
         lifecycleScope.launch {
             val labels = withContext(Dispatchers.IO) { YamnetLabelLoader.loadAll(applicationContext) }
             val current = profileManager.getProfile(profileId)
-            adapter.setData(labels, current.priorityLabels, current.urgencyOverrides)
+            allLabels = labels
+            val checked = if (current.checkAll) allLabels.toSet() else current.priorityLabels
+            savedLabels = checked
+            pendingLabels.clear()
+            pendingLabels.addAll(checked)
+            adapter.setData(labels, checked, current.urgencyOverrides)
             binding.profileSubtitle.text = getString(
                 R.string.profile_subtitle, profile.name, labels.size
             )

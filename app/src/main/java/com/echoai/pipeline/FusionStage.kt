@@ -24,6 +24,7 @@ class FusionStage(
         val urgentOverrideLabels = profile.urgencyOverrides
             .filterValues { it == Urgency.HIGH || it == Urgency.CRITICAL }
             .keys
+        tracker.matchAll = profile.checkAll
         tracker.priorityLabels = profile.priorityLabels + urgentOverrideLabels
         tracker.urgencyOverrides = profile.urgencyOverrides
     }
