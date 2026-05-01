@@ -22,7 +22,7 @@ class ProfileManager(context: Context) {
     fun getProfile(id: String): SoundProfile {
         val isPreset = SoundProfile.PRESETS.any { it.id == id }
         val json = prefs.getString("profile_$id", null)
-            ?: return if (isPreset) SoundProfile.PRESETS.first { it.id == id }
+            ?: return if (isPreset) SoundProfile.PRESETS.first { it.id == id }.copy(name = nameFor(id))
             else SoundProfile(id = id, name = nameFor(id), priorityLabels = emptySet())
 
         return try {
@@ -49,7 +49,7 @@ class ProfileManager(context: Context) {
                 checkAll = obj.optBoolean("check_all", false),
             )
         } catch (e: Exception) {
-            if (isPreset) SoundProfile.PRESETS.first { it.id == id }
+            if (isPreset) SoundProfile.PRESETS.first { it.id == id }.copy(name = nameFor(id))
             else SoundProfile(id = id, name = nameFor(id), priorityLabels = emptySet())
         }
     }
@@ -97,17 +97,59 @@ class ProfileManager(context: Context) {
         return profile
     }
 
+    fun renameProfile(id: String, name: String) {
+        val trimmed = name.trim()
+        if (trimmed.isEmpty()) return
+        prefs.edit().putString("profile_name_$id", trimmed).apply()
+        val current = getProfile(id)
+        if (current.id == _activeProfile.value.id) {
+            _activeProfile.value = current
+        }
+        _allProfiles.value = loadAllProfiles()
+    }
+
     fun reorderProfiles(orderedIds: List<String>) {
         prefs.edit().putString("profile_order", JSONArray(orderedIds).toString()).apply()
         _allProfiles.value = loadAllProfiles()
     }
 
-    fun deleteProfile(id: String) {
-        if (SoundProfile.PRESETS.any { it.id == id }) return
-        prefs.edit().remove("profile_$id").remove("profile_name_$id").apply()
-        saveCustomIds(loadCustomIds() - id)
-        if (_activeProfile.value.id == id) setActiveProfileId(SoundProfile.DEFAULT_ID)
-        _allProfiles.value = loadAllProfiles()
+    fun canDeleteProfile(id: String): Boolean =
+        loadAllProfiles().any { it.id == id } && loadAllProfiles().size > 1
+
+    fun deleteProfile(id: String): Boolean {
+        if (!canDeleteProfile(id)) return false
+
+        val isPreset = SoundProfile.PRESETS.any { it.id == id }
+        val editor = prefs.edit()
+            .remove("profile_$id")
+            .remove("profile_name_$id")
+
+        if (isPreset) {
+            editor.putString("deleted_preset_ids", JSONArray(loadDeletedPresetIds() + id).toString())
+        } else {
+            saveCustomIds(loadCustomIds() - id)
+        }
+
+        val orderStr = prefs.getString("profile_order", null)
+        if (orderStr != null) {
+            val orderedIds = try {
+                val arr = JSONArray(orderStr)
+                (0 until arr.length()).map { arr.getString(it) }.filterNot { it == id }
+            } catch (_: Exception) {
+                emptyList()
+            }
+            editor.putString("profile_order", JSONArray(orderedIds).toString())
+        }
+
+        editor.apply()
+
+        val profiles = loadAllProfiles()
+        if (_activeProfile.value.id == id) {
+            prefs.edit().putString("active_profile", profiles.first().id).apply()
+            _activeProfile.value = profiles.first()
+        }
+        _allProfiles.value = profiles
+        return true
     }
 
     private fun loadActiveProfile(): SoundProfile =
@@ -116,18 +158,17 @@ class ProfileManager(context: Context) {
         )
 
     private fun loadAllProfiles(): List<SoundProfile> {
-        val orderStr = prefs.getString("profile_order", null) ?: return (
-            SoundProfile.PRESETS + loadCustomIds().map { getProfile(it) }
-        )
+        val presetIds = SoundProfile.PRESETS.map { it.id } - loadDeletedPresetIds().toSet()
+        val allKnownIds = presetIds + loadCustomIds()
+        val orderStr = prefs.getString("profile_order", null) ?: return allKnownIds.map { getProfile(it) }
         return try {
             val arr = JSONArray(orderStr)
             val savedIds = (0 until arr.length()).map { arr.getString(it) }
-            val allKnownIds = SoundProfile.PRESETS.map { it.id } + loadCustomIds()
             val ordered = savedIds.filter { it in allKnownIds } +
                 allKnownIds.filter { it !in savedIds }
-            ordered.map { id -> SoundProfile.PRESETS.firstOrNull { it.id == id } ?: getProfile(id) }
+            ordered.map { id -> getProfile(id) }
         } catch (_: Exception) {
-            SoundProfile.PRESETS + loadCustomIds().map { getProfile(it) }
+            allKnownIds.map { getProfile(it) }
         }
     }
 
@@ -142,7 +183,13 @@ class ProfileManager(context: Context) {
             .apply()
     }
 
+    private fun loadDeletedPresetIds(): Set<String> = try {
+        val arr = JSONArray(prefs.getString("deleted_preset_ids", "[]") ?: "[]")
+        (0 until arr.length()).map { arr.getString(it) }.toSet()
+    } catch (e: Exception) { emptySet() }
+
     private fun nameFor(id: String): String =
-        SoundProfile.PRESETS.firstOrNull { it.id == id }?.name
-            ?: prefs.getString("profile_name_$id", id) ?: id
+        prefs.getString("profile_name_$id", null)
+            ?: SoundProfile.PRESETS.firstOrNull { it.id == id }?.name
+            ?: id
 }

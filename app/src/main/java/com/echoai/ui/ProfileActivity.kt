@@ -1,7 +1,10 @@
 package com.echoai.ui
 
+import android.app.Activity
 import android.app.AlertDialog
+import android.app.ActivityOptions
 import android.content.Intent
+import android.os.Build
 import android.os.Bundle
 import android.text.Editable
 import android.text.TextWatcher
@@ -121,11 +124,13 @@ class ProfileActivity : AppCompatActivity() {
                     AlertDialog.Builder(this@ProfileActivity)
                         .setTitle(getString(R.string.unsaved_changes_title))
                         .setMessage(getString(R.string.unsaved_changes_message))
-                        .setPositiveButton(getString(R.string.discard_changes)) { _, _ -> finish() }
+                        .setPositiveButton(getString(R.string.discard_changes)) { _, _ ->
+                            finishWithoutAnimation()
+                        }
                         .setNegativeButton(getString(R.string.keep_editing), null)
                         .show()
                 } else {
-                    finish()
+                    finishWithoutAnimation()
                 }
             }
         })
@@ -159,7 +164,7 @@ class ProfileActivity : AppCompatActivity() {
                 right = rootStartRight + systemBars.right,
             )
             binding.bottomTabBar.updatePadding(
-                bottom = tabStartBottom + systemBars.bottom
+                bottom = tabStartBottom + ((systemBars.bottom * 3) / 4)
             )
             insets
         }
@@ -182,9 +187,20 @@ class ProfileActivity : AppCompatActivity() {
     private fun openListening() {
         startActivity(
             Intent(this, MainActivity::class.java)
-                .addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP)
+                .addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP),
+            ActivityOptions.makeCustomAnimation(this, 0, 0).toBundle(),
         )
+        finishWithoutAnimation()
+    }
+
+    private fun finishWithoutAnimation() {
         finish()
+        if (Build.VERSION.SDK_INT >= 34) {
+            overrideActivityTransition(Activity.OVERRIDE_TRANSITION_CLOSE, 0, 0)
+        } else {
+            @Suppress("DEPRECATION")
+            overridePendingTransition(0, 0)
+        }
     }
 
     private fun updateSaveBar() {
