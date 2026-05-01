@@ -111,6 +111,6 @@ class EventTracker(
     }
 
     companion object {
-        private const val PRIORITY_CONFIDENCE_THRESHOLD = 0.10f
+        private const val PRIORITY_CONFIDENCE_THRESHOLD = 0.25f
     }
 }

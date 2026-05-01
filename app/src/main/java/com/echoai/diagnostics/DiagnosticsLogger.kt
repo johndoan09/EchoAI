@@ -35,6 +35,11 @@ class DiagnosticsLogger private constructor(
         topLabel: LabeledScore?,
         full: LocalizationResult,
         sub: LocalizationResult,
+        monoRms: Float,
+        noiseFloor: Float,
+        snrDb: Float,
+        yamnetSkipped: Boolean,
+        floorUpdated: Boolean,
         azimuthIldDeg: Float?,
         azimuthLagDeg: Float?,
         phoneYawDeg: Float?,
@@ -57,6 +62,11 @@ class DiagnosticsLogger private constructor(
             sub.crossPairLag.samples.toString(), "%.3f".format(sub.crossPairLag.confidence),
             sub.withinPairBottom.samples.toString(), "%.3f".format(sub.withinPairBottom.confidence),
             sub.withinPairBack.samples.toString(), "%.3f".format(sub.withinPairBack.confidence),
+            "%.1f".format(monoRms),
+            "%.1f".format(noiseFloor),
+            "%.2f".format(snrDb),
+            if (yamnetSkipped) "1" else "0",
+            if (floorUpdated) "1" else "0",
             azimuthIldDeg?.let { "%.2f".format(it) } ?: "",
             azimuthLagDeg?.let { "%.2f".format(it) } ?: "",
             phoneYawDeg?.let { "%.2f".format(it) } ?: "",
@@ -86,6 +96,7 @@ class DiagnosticsLogger private constructor(
                 "bot_ild,bk_ild," +
                 "cross_lag_1s,cross_conf_1s,bot_lag_1s,bot_conf_1s,bk_lag_1s,bk_conf_1s," +
                 "cross_lag_250,cross_conf_250,bot_lag_250,bot_conf_250,bk_lag_250,bk_conf_250," +
+                "mono_rms,noise_floor,snr_db,yamnet_skipped,floor_updated," +
                 "azimuth_ild_deg,azimuth_lag_deg,phone_yaw_deg,belief_peak_deg,belief_intensity"
 
         fun start(context: Context): DiagnosticsLogger {

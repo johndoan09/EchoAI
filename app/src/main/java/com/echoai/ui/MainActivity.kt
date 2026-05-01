@@ -44,6 +44,9 @@ import com.echoai.domain.SoundEvent
 import com.echoai.domain.SoundProfile
 import com.echoai.domain.SoundHistoryManager
 import com.echoai.domain.UrgencyClassifier
+import com.echoai.audio.NoiseFloorTracker
+import com.echoai.audio.monoRms
+import com.echoai.ml.LabeledScore
 import com.echoai.ml.SoundClassifier
 import com.echoai.ml.StubSoundClassifier
 import com.echoai.ml.YamnetClassifier
@@ -117,6 +120,13 @@ class MainActivity : AppCompatActivity() {
     // result is at most 3 hops (~375 ms) old — well within EventTracker.staleAfterNanos (3 s).
     private var lastClassification: ClassificationResult? = null
     private var classificationFrameCounter = 0
+
+    // Noise-floor tracking + skip-if-quiet gate. Updated every window; classification
+    // is skipped when the current window's mono RMS isn't meaningfully above the
+    // rolling background floor. Hysteresis (open at +6 dB, close at +3 dB) prevents
+    // flicker between borderline windows.
+    private val noiseFloorTracker = NoiseFloorTracker()
+    private var noiseGateOpen = false
 
     // Yaw history for rotation-rate tracking (recent samples, capped by time window).
     private val yawHistory = ArrayDeque<Pair<Long, Float>>(24)
@@ -501,6 +511,8 @@ class MainActivity : AppCompatActivity() {
         belief.reset()
         lastClassification = null
         classificationFrameCounter = 0
+        noiseFloorTracker.reset()
+        noiseGateOpen = false
         yawHistory.clear()
         rotateHintFrames = 0
         setRotateHintVisible(false, animate = false)
@@ -565,19 +577,51 @@ class MainActivity : AppCompatActivity() {
     )
 
     private suspend fun processWindow(window: AudioWindow): Frame = coroutineScope {
+        // Noise-floor + skip-if-quiet gate. The mono RMS here is the same 4-channel
+        // downmix YAMNet would see, so the gate decision exactly mirrors what the
+        // model would experience. Hysteresis prevents flicker on borderline windows.
+        // SNR is computed against the floor as it stood entering this window — the
+        // floor is only updated *after* classification (see end of method), and only
+        // for windows we believe are silent. This keeps sustained sound from training
+        // the floor up to itself.
+        val monoRms = window.monoRms()
+        val snrDb = noiseFloorTracker.snrDb(monoRms)
+        noiseGateOpen = if (noiseGateOpen) snrDb >= GATE_CLOSE_DB else snrDb >= GATE_OPEN_DB
+
         // YAMNet runs every Nth window; localization runs every window. Between
         // classifications we reuse the cached result (the dominant source rarely
         // changes within ~250 ms, so this is a safe assumption for stage-(a) attribution).
         val localizeJob = async(Dispatchers.Default) { localizationStage.localizeMultiScale(window) }
         val shouldClassify = (classificationFrameCounter % CLASSIFY_EVERY_N) == 0
         classificationFrameCounter++
-        val classification = if (shouldClassify) {
-            val fresh = withContext(Dispatchers.Default) { classificationStage.classify(window) }
-            lastClassification = fresh
-            fresh
-        } else {
-            lastClassification ?: ClassificationResult(window.frameNumber, emptyList())
+        val yamnetSkipped = !noiseGateOpen
+        val classification = when {
+            !noiseGateOpen -> {
+                // Below the gate — synthesize Silence and refresh the cache so a stale
+                // pre-quiet classification doesn't keep displaying through the silence.
+                val s = silenceClassification(window.frameNumber)
+                lastClassification = s
+                s
+            }
+            shouldClassify -> {
+                val fresh = withContext(Dispatchers.Default) { classificationStage.classify(window) }
+                lastClassification = fresh
+                fresh
+            }
+            else -> lastClassification ?: silenceClassification(window.frameNumber)
         }
+
+        // Floor update decision: a window is "silent" for floor-update purposes if the
+        // gate was closed OR no class cleared the freeze threshold (Silence excluded).
+        // This freezes the floor during sustained real sound — without it, the rolling
+        // min trains the floor up to current speech / traffic / music level over ~6 s
+        // and the gate stops registering anything. Warmup window inside the tracker
+        // bypasses this check on the first ~2 s so the floor can settle from launch.
+        val isSilent = !noiseGateOpen || classification.topK.firstOrNull {
+            it.confidence >= FLOOR_FREEZE_THRESHOLD &&
+                !it.label.equals(SILENCE_LABEL, ignoreCase = true)
+        } == null
+        noiseFloorTracker.update(monoRms, isSilent)
         val multi = localizeJob.await()
         val events = withContext(Dispatchers.Default) {
             fusionStage.process(classification, multi.full)
@@ -625,6 +669,11 @@ class MainActivity : AppCompatActivity() {
             topLabel = classification.topK.firstOrNull(),
             full = multi.full,
             sub = multi.sub,
+            monoRms = monoRms,
+            noiseFloor = noiseFloorTracker.floorRms,
+            snrDb = snrDb,
+            yamnetSkipped = yamnetSkipped,
+            floorUpdated = noiseFloorTracker.lastUpdateApplied,
             azimuthIldDeg = azX,
             azimuthLagDeg = azLag,
             phoneYawDeg = yaw,
@@ -674,10 +723,24 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
+    private fun silenceClassification(frameNumber: Long): ClassificationResult =
+        ClassificationResult(frameNumber, listOf(LabeledScore(SILENCE_LABEL, 1f)))
+
     companion object {
         /** Run YAMNet on every Nth pipeline window. With HOP_FRAMES = 2000 (8 Hz), N=4
          *  gives 2 Hz classification while localization + belief update runs at full 8 Hz. */
         private const val CLASSIFY_EVERY_N = 4
+        /** Skip-if-quiet gate hysteresis (dB above rolling noise floor). The gate opens
+         *  when SNR rises above [GATE_OPEN_DB] and closes when it falls below
+         *  [GATE_CLOSE_DB]. Aggressively low so that anything meaningfully above the
+         *  floor passes; gate effectively only closes when the current window IS the
+         *  rolling minimum (true silence). */
+        private const val GATE_OPEN_DB = 0.5f
+        private const val GATE_CLOSE_DB = 0.1f
+        /** Min top-K confidence (excluding Silence) above which the noise floor freezes
+         *  for that window. Should match the EventTracker priority threshold so "this
+         *  window has a real event" is consistent across both decisions. */
+        private const val FLOOR_FREEZE_THRESHOLD = 0.25f
         /** Decay rate applied per silent window. 10× the normal 0.01 in BeliefDistribution
          *  → ~57%/s convergence to uniform at 8 Hz, so the halo fades within ~2 s of silence. */
         private const val SILENCE_DECAY_RATE = 0.10f
