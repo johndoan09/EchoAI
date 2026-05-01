@@ -1,11 +1,15 @@
 package com.echoai.ui
 
+import android.app.AlertDialog
 import android.os.Bundle
 import android.text.Editable
 import android.text.TextWatcher
+import android.view.View
+import androidx.activity.OnBackPressedCallback
 import androidx.appcompat.app.AppCompatActivity
 import androidx.lifecycle.lifecycleScope
 import androidx.recyclerview.widget.LinearLayoutManager
+import com.echoai.R
 import com.echoai.databinding.ActivityProfileBinding
 import com.echoai.domain.ProfileManager
 import com.echoai.domain.SoundProfile
@@ -22,6 +26,9 @@ class ProfileActivity : AppCompatActivity() {
     private lateinit var adapter: SoundLabelAdapter
     private var profileId = SoundProfile.DEFAULT_ID
 
+    private var savedLabels: Set<String> = emptySet()
+    private val pendingLabels = mutableSetOf<String>()
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         binding = ActivityProfileBinding.inflate(layoutInflater)
@@ -31,16 +38,19 @@ class ProfileActivity : AppCompatActivity() {
         profileManager = ProfileManager(applicationContext)
         val urgencyClassifier = UrgencyClassifier(applicationContext)
         val profile = profileManager.getProfile(profileId)
+        savedLabels = profile.priorityLabels
+        pendingLabels.addAll(savedLabels)
 
-        binding.profileTitle.text = getString(com.echoai.R.string.tab_scene_profile)
-        binding.backButton.setOnClickListener { finish() }
+        binding.profileTitle.text = getString(R.string.tab_scene_profile)
+        binding.backButton.setOnClickListener {
+            onBackPressedDispatcher.onBackPressed()
+        }
 
         adapter = SoundLabelAdapter(
             urgencyClassifier = urgencyClassifier,
             onToggle = { label, checked ->
-                val current = profileManager.getProfile(profileId)
-                val updated = if (checked) current.priorityLabels + label else current.priorityLabels - label
-                profileManager.saveProfile(current.copy(priorityLabels = updated))
+                if (checked) pendingLabels.add(label) else pendingLabels.remove(label)
+                updateSaveBar()
             },
             onUrgencyChange = { label, urgency ->
                 val current = profileManager.getProfile(profileId)
@@ -69,14 +79,48 @@ class ProfileActivity : AppCompatActivity() {
             adapter.setData(adapter.currentLabels(), current.priorityLabels, emptyMap())
         }
 
+        binding.cancelChangesButton.setOnClickListener {
+            pendingLabels.clear()
+            pendingLabels.addAll(savedLabels)
+            adapter.resetTo(savedLabels)
+            updateSaveBar()
+        }
+
+        binding.saveChangesButton.setOnClickListener {
+            val current = profileManager.getProfile(profileId)
+            profileManager.saveProfile(current.copy(priorityLabels = pendingLabels.toSet()))
+            savedLabels = pendingLabels.toSet()
+            adapter.commitSort()
+            updateSaveBar()
+        }
+
+        onBackPressedDispatcher.addCallback(this, object : OnBackPressedCallback(true) {
+            override fun handleOnBackPressed() {
+                if (pendingLabels != savedLabels) {
+                    AlertDialog.Builder(this@ProfileActivity)
+                        .setTitle(getString(R.string.unsaved_changes_title))
+                        .setMessage(getString(R.string.unsaved_changes_message))
+                        .setPositiveButton(getString(R.string.discard_changes)) { _, _ -> finish() }
+                        .setNegativeButton(getString(R.string.keep_editing), null)
+                        .show()
+                } else {
+                    finish()
+                }
+            }
+        })
+
         lifecycleScope.launch {
             val labels = withContext(Dispatchers.IO) { YamnetLabelLoader.loadAll(applicationContext) }
             val current = profileManager.getProfile(profileId)
             adapter.setData(labels, current.priorityLabels, current.urgencyOverrides)
             binding.profileSubtitle.text = getString(
-                com.echoai.R.string.profile_subtitle, profile.name, labels.size
+                R.string.profile_subtitle, profile.name, labels.size
             )
         }
+    }
+
+    private fun updateSaveBar() {
+        binding.saveBar.visibility = if (pendingLabels != savedLabels) View.VISIBLE else View.GONE
     }
 
     companion object {

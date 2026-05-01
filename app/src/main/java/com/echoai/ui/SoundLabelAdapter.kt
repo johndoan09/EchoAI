@@ -20,6 +20,7 @@ class SoundLabelAdapter(
     private var allLabels: List<String> = emptyList()
     private var filtered: List<String> = emptyList()
     private val checkedLabels = mutableSetOf<String>()
+    private var sortLabels: Set<String> = emptySet()
     private var urgencyOverrides: Map<String, Urgency> = emptyMap()
     private var query = ""
 
@@ -29,8 +30,20 @@ class SoundLabelAdapter(
         allLabels = labels.sortedWith(compareBy { it.lowercase() })
         checkedLabels.clear()
         checkedLabels.addAll(checked)
+        sortLabels = checked.toSet()
         urgencyOverrides = overrides
         applyFilter()
+    }
+
+    fun commitSort() {
+        sortLabels = checkedLabels.toSet()
+        applyFilter()
+    }
+
+    fun resetTo(labels: Set<String>) {
+        checkedLabels.clear()
+        checkedLabels.addAll(labels)
+        notifyDataSetChanged()
     }
 
     fun filter(q: String) {
@@ -42,7 +55,7 @@ class SoundLabelAdapter(
         val base = if (query.isBlank()) allLabels
         else allLabels.filter { it.contains(query, ignoreCase = true) }
         filtered = base.sortedWith(
-            compareByDescending<String> { it in checkedLabels }.thenBy { it.lowercase() }
+            compareByDescending<String> { it in sortLabels }.thenBy { it.lowercase() }
         )
         notifyDataSetChanged()
     }
@@ -92,7 +105,7 @@ class SoundLabelAdapter(
         b.checkBox.setOnCheckedChangeListener { _, isChk ->
             if (isChk) checkedLabels.add(label) else checkedLabels.remove(label)
             onToggle(label, isChk)
-            applyFilter()
+            notifyDataSetChanged()
         }
 
         b.urgencyBadge.setOnClickListener {

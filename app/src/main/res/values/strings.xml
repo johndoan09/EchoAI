@@ -28,5 +28,11 @@
     <string name="history">History</string>
     <string name="no_history">No high-urgency sounds detected in the past 24 hours.</string>
     <string name="profile_subtitle"><![CDATA[%1$s · %2$d sounds]]></string>
+    <string name="save_changes">Save Changes</string>
+    <string name="cancel">Cancel</string>
+    <string name="discard_changes">Discard</string>
+    <string name="keep_editing">Keep Editing</string>
+    <string name="unsaved_changes_title">Unsaved Changes</string>
+    <string name="unsaved_changes_message">You have unsaved changes to your sound selection. Discard them?</string>
 </resources>
 
