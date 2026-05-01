@@ -89,8 +89,8 @@
         android:layout_height="wrap_content"
         android:gravity="center"
         android:paddingHorizontal="16dp"
-        android:paddingTop="8dp"
-        android:paddingBottom="4dp">
+        android:paddingTop="2dp"
+        android:paddingBottom="2dp">
 
         <Button
             android:id="@+id/liveToggle"
@@ -124,7 +124,8 @@
         android:paddingBottom="2dp"
         android:text="@string/live_idle"
         android:textColor="@color/muted"
-        android:textSize="11sp" />
+        android:textSize="11sp"
+        android:visibility="gone" />
 
     <!-- Pinned alerts section -->
     <LinearLayout

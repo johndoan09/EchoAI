@@ -67,6 +67,12 @@ class ProfileManager(context: Context) {
         if (profile.id == _activeProfile.value.id) {
             _activeProfile.value = profile
         }
+        _allProfiles.value = loadAllProfiles()
+    }
+
+    fun refreshFromStorage() {
+        _allProfiles.value = loadAllProfiles()
+        _activeProfile.value = loadActiveProfile()
     }
 
     fun setActiveProfileId(id: String) {

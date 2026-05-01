@@ -30,9 +30,8 @@ class EventTracker(
         val now = localization.captureTimestampNanos
         evictStale(now)
 
-        val top = classification.topK.firstOrNull() ?: return
-        val isPrioritized = isPriority(top.label)
-        val threshold = if (isPrioritized) PRIORITY_CONFIDENCE_THRESHOLD else refreshConfidenceThreshold
+        val top = classification.topK.firstOrNull { isPriority(it.label) } ?: return
+        val threshold = PRIORITY_CONFIDENCE_THRESHOLD
         if (top.confidence < threshold) return
 
         val devicePos = DevicePosition(
@@ -51,7 +50,7 @@ class EventTracker(
                 lastSeenTimestampNanos = now,
                 devicePosition = devicePos,
                 worldOrientation = localization.worldOrientation,
-                isPrioritized = isPrioritized,
+                isPrioritized = true,
             )
         } else {
             SoundEvent(
@@ -62,7 +61,7 @@ class EventTracker(
                 lastSeenTimestampNanos = now,
                 devicePosition = devicePos,
                 worldOrientation = localization.worldOrientation,
-                isPrioritized = isPrioritized,
+                isPrioritized = true,
             )
         }
     }

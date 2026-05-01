@@ -8,9 +8,9 @@ data class PinnedAlert(
 )
 
 /**
- * Collects HIGH/CRITICAL events (including prioritized events boosted to HIGH) into a
- * persistent unacknowledged set. Entries survive until the user explicitly dismisses them,
- * so a sound that fired while the phone was idle stays visible on next interaction.
+ * Collects HIGH/CRITICAL events into a persistent unacknowledged set. Entries survive
+ * until the user explicitly dismisses them, so a sound that fired while the phone was
+ * idle stays visible on next interaction.
  */
 class PinnedAlertTracker {
 
@@ -40,10 +40,8 @@ class PinnedAlertTracker {
     fun isEmpty(): Boolean = pinned.isEmpty()
 
     private fun effectiveRank(event: SoundEvent): Int =
-        if (event.isPrioritized) maxOf(event.urgency.ordinalRank, Urgency.HIGH.ordinalRank)
-        else event.urgency.ordinalRank
+        event.urgency.ordinalRank
 
     private fun effectivePinnedRank(alert: PinnedAlert): Int =
-        if (alert.isPrioritized) maxOf(alert.urgency.ordinalRank, Urgency.HIGH.ordinalRank)
-        else alert.urgency.ordinalRank
+        alert.urgency.ordinalRank
 }
