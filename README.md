@@ -40,7 +40,7 @@ To build this project from absolute scratch, you will need the following core to
 ### Step 1: Clone and Configure
 First, clone the repository to your local machine:
 ```sh
-git clone [https://github.com/johndoan09/EchoAI.git](https://github.com/johndoan09/EchoAI.git)
+git clone https://github.com/johndoan09/EchoAI.git
 cd EchoAI
 ```
 
@@ -58,7 +58,7 @@ This flow is ideal if you have the target hardware—like a Samsung Galaxy S25 U
 2. Connect the phone to your machine via USB.
 3. Verify the device is recognized by the Android Debug Bridge (ADB):
    ```sh
-   adb devices
+   ~/Library/Android/sdk/platform-tools/adb devices
    ```
 4. Compile the application and install it directly to your connected phone:
    ```sh
