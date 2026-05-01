@@ -1,28 +1,41 @@
 package com.echoai.ui
 
 import android.Manifest
+import android.animation.ValueAnimator
 import android.annotation.SuppressLint
+import android.app.AlertDialog
+import android.content.Intent
 import android.content.pm.PackageManager
+import android.os.Build
 import android.os.Bundle
+import android.text.Html
 import android.view.View
+import android.view.animation.DecelerateInterpolator
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.content.ContextCompat
+import androidx.core.view.ViewCompat
+import androidx.core.view.WindowCompat
+import androidx.core.view.WindowInsetsCompat
+import androidx.core.view.updatePadding
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.lifecycleScope
 import androidx.lifecycle.repeatOnLifecycle
+import androidx.recyclerview.widget.LinearLayoutManager
 import com.echoai.R
 import com.echoai.audio.AudioCaptureManager
 import com.echoai.audio.AudioWindow
-import com.echoai.audio.MicCapabilityProbe
-import com.echoai.audio.MultiStreamProbe
-import com.echoai.audio.StereoMicTest
 import com.echoai.databinding.ActivityMainBinding
 import com.echoai.diagnostics.DiagnosticsLogger
 import com.echoai.domain.BeliefDistribution
 import com.echoai.domain.ClassificationResult
-import com.echoai.domain.LocalizationResult
+import com.echoai.domain.EventTracker
+import com.echoai.domain.PinnedAlertTracker
+import com.echoai.domain.ProfileManager
 import com.echoai.domain.SoundEvent
+import com.echoai.domain.SoundProfile
+import com.echoai.domain.SoundHistoryManager
+import com.echoai.domain.UrgencyClassifier
 import com.echoai.ml.SoundClassifier
 import com.echoai.ml.StubSoundClassifier
 import com.echoai.ml.YamnetClassifier
@@ -30,6 +43,7 @@ import com.echoai.pipeline.ClassificationStage
 import com.echoai.pipeline.FusionStage
 import com.echoai.pipeline.LocalizationStage
 import com.echoai.sensor.RotationVectorProvider
+import com.echoai.util.HapticManager
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.async
@@ -41,36 +55,42 @@ import kotlinx.coroutines.withContext
 class MainActivity : AppCompatActivity() {
 
     private lateinit var binding: ActivityMainBinding
+    private lateinit var pinnedAdapter: PinnedAlertAdapter
+    private lateinit var sceneChipAdapter: SceneChipAdapter
 
-    private enum class PendingAction { STEREO_TEST, MIC_PROBE, MULTI_PROBE, LIVE_START }
-
-    private var pending: PendingAction? = null
+    private var pendingStart = false
     private val requestMic = registerForActivityResult(
         ActivityResultContracts.RequestPermission()
     ) { granted ->
-        if (granted) pending?.let(::dispatch)
-        else binding.results.text = getString(R.string.mic_permission_denied)
-        pending = null
+        if (granted && pendingStart) startLive()
+        else if (!granted) binding.statusText.text = getString(R.string.mic_permission_denied)
+        pendingStart = false
     }
 
-    // Pipeline. YamnetClassifier is the real model; falls back to StubSoundClassifier
-    // only if the .tflite asset can't be loaded.
+    // --- Pipeline (localization + IMU stack from imu-bayesian-belief, profile-aware fusion from main) ---
+
     private val orientationProvider by lazy { RotationVectorProvider(applicationContext) }
-    private val captureManager by lazy { AudioCaptureManager(applicationContext, orientationProvider) }
+    private val captureManager by lazy {
+        AudioCaptureManager(applicationContext, orientationProvider)
+    }
     private val classifier: SoundClassifier by lazy {
         YamnetClassifier.create(applicationContext) ?: StubSoundClassifier()
     }
-    private val classifierBackend: String by lazy {
-        (classifier as? YamnetClassifier)?.backend ?: "STUB"
-    }
     private val classificationStage by lazy { ClassificationStage(classifier) }
     private val localizationStage = LocalizationStage()
-    private val fusionStage = FusionStage()
+    private val urgencyClassifier by lazy { UrgencyClassifier(applicationContext) }
+    private val hapticManager by lazy { HapticManager(applicationContext) }
+    private val fusionStage by lazy {
+        FusionStage(EventTracker(urgencyClassifier = urgencyClassifier))
+    }
+    private val profileManager by lazy { ProfileManager(applicationContext) }
+    private val historyManager by lazy { SoundHistoryManager(applicationContext) }
+    private val pinnedAlertTracker by lazy { PinnedAlertTracker(applicationContext) }
+
     // BeliefDistribution is fed `bot_ild` (the strong within-pair ILD signal that captures
     // long-axis source direction). Positive bot_ild = source toward BOTTOM of phone
     // (deviceAngle ≈ 180°), so biasScale is negative so that cos(180°)*biasScale > 0.
-    // decayRate = 0.01 per update at 8 Hz ≈ 0.08/s effective decay (time-domain behavior
-    // preserved across the 2 → 4 → 8 Hz cadence bumps).
+    // decayRate = 0.01 per update at 8 Hz ≈ 0.08/s effective decay.
     private val belief = BeliefDistribution(
         biasScale = -0.5f,
         measurementSigma = 0.25f,
@@ -79,12 +99,12 @@ class MainActivity : AppCompatActivity() {
 
     private var pipelineJob: Job? = null
     private var liveActive = false
+    private var pinnedSectionVisible = false
     private var diagnosticsLogger: DiagnosticsLogger? = null
-    private var diagnosticsFilePath: String? = null
 
-    // Classification cache: at 4 Hz localization / 2 Hz classification, every other window
-    // skips YAMNet and reuses the most-recent classification result. The reused result is
-    // at most one hop (~250 ms) old — well within EventTracker.staleAfterNanos (3 s).
+    // Classification cache: at 8 Hz localization / 2 Hz classification, every 4th window
+    // runs YAMNet and the others reuse the most-recent classification result. The reused
+    // result is at most 3 hops (~375 ms) old — well within EventTracker.staleAfterNanos (3 s).
     private var lastClassification: ClassificationResult? = null
     private var classificationFrameCounter = 0
 
@@ -94,14 +114,145 @@ class MainActivity : AppCompatActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        WindowCompat.setDecorFitsSystemWindows(window, false)
         binding = ActivityMainBinding.inflate(layoutInflater)
         setContentView(binding.root)
+        installSystemBarInsets()
+
+        renderWordmark()
+
+        pinnedAdapter = PinnedAlertAdapter(
+            onDismiss = { alert ->
+                pinnedAlertTracker.acknowledge(alert.label, alert.urgency)
+                refreshPinnedSection()
+            },
+            onTap = { label ->
+                startActivity(Intent(this, HistoryActivity::class.java).apply {
+                    putExtra(HistoryActivity.EXTRA_HIGHLIGHT_LABEL, label)
+                })
+            },
+        )
+        binding.pinnedAlertsList.layoutManager = LinearLayoutManager(this)
+        binding.pinnedAlertsList.adapter = pinnedAdapter
+
         binding.liveToggle.setOnClickListener { onLiveToggle() }
-        binding.resetBelief.setOnClickListener { onResetBelief() }
-        binding.runTest.setOnClickListener { withMic(PendingAction.STEREO_TEST) }
-        binding.probeMics.setOnClickListener { withMic(PendingAction.MIC_PROBE) }
-        binding.sweepMatrix.setOnClickListener { withMic(PendingAction.MULTI_PROBE) }
-        binding.results.text = getString(R.string.live_idle)
+        binding.historyButton.setOnClickListener {
+            startActivity(Intent(this, HistoryActivity::class.java))
+        }
+        binding.clearAllButton.setOnClickListener {
+            pinnedAlertTracker.acknowledgeAll()
+            refreshPinnedSection()
+        }
+        binding.tabListening.setOnClickListener { /* already here */ }
+        binding.tabProfile.setOnClickListener {
+            startActivity(
+                Intent(this, ProfileActivity::class.java).apply {
+                    putExtra(ProfileActivity.EXTRA_PROFILE_ID, profileManager.activeProfile.value.id)
+                }
+            )
+        }
+
+        setupSceneChips()
+
+        // No alerts on launch — start with the expanded button state immediately (no animation)
+        applyLiveToggleState(expanded = true, animate = false)
+        refreshPinnedSection(animate = false)
+
+        observeProfiles()
+    }
+
+    private fun setupSceneChips() {
+        sceneChipAdapter = SceneChipAdapter(
+            onChipClick = { profileManager.setActiveProfileId(it.id) },
+            onChipLongClick = { showDeleteProfileDialog(it) },
+            onAddClick = {
+                CreateProfileSheet.show(this) { name ->
+                    val profile = profileManager.createProfile(name)
+                    profileManager.setActiveProfileId(profile.id)
+                }
+            },
+            onDragStart = { holder -> chipTouchHelper.startDrag(holder) },
+        )
+
+        binding.sceneChipRow.layoutManager =
+            androidx.recyclerview.widget.LinearLayoutManager(
+                this, androidx.recyclerview.widget.LinearLayoutManager.HORIZONTAL, false
+            )
+        binding.sceneChipRow.adapter = sceneChipAdapter
+
+        chipTouchHelper.attachToRecyclerView(binding.sceneChipRow)
+    }
+
+    private val chipTouchHelper = androidx.recyclerview.widget.ItemTouchHelper(
+        object : androidx.recyclerview.widget.ItemTouchHelper.SimpleCallback(
+            androidx.recyclerview.widget.ItemTouchHelper.LEFT or
+                androidx.recyclerview.widget.ItemTouchHelper.RIGHT, 0
+        ) {
+            override fun isLongPressDragEnabled() = false
+
+            override fun getMovementFlags(
+                rv: androidx.recyclerview.widget.RecyclerView,
+                holder: androidx.recyclerview.widget.RecyclerView.ViewHolder,
+            ) = if (holder.itemViewType == SceneChipAdapter.TYPE_ADD) 0
+                else makeMovementFlags(
+                    androidx.recyclerview.widget.ItemTouchHelper.LEFT or
+                        androidx.recyclerview.widget.ItemTouchHelper.RIGHT, 0
+                )
+
+            override fun onMove(
+                rv: androidx.recyclerview.widget.RecyclerView,
+                from: androidx.recyclerview.widget.RecyclerView.ViewHolder,
+                to: androidx.recyclerview.widget.RecyclerView.ViewHolder,
+            ): Boolean {
+                if (to.itemViewType == SceneChipAdapter.TYPE_ADD) return false
+                sceneChipAdapter.moveItem(from.adapterPosition, to.adapterPosition)
+                return true
+            }
+
+            override fun onSwiped(
+                holder: androidx.recyclerview.widget.RecyclerView.ViewHolder, dir: Int
+            ) {}
+
+            override fun onSelectedChanged(
+                holder: androidx.recyclerview.widget.RecyclerView.ViewHolder?,
+                actionState: Int,
+            ) {
+                super.onSelectedChanged(holder, actionState)
+                if (actionState == androidx.recyclerview.widget.ItemTouchHelper.ACTION_STATE_DRAG) {
+                    holder?.itemView?.alpha = 0.75f
+                }
+            }
+
+            override fun clearView(
+                rv: androidx.recyclerview.widget.RecyclerView,
+                holder: androidx.recyclerview.widget.RecyclerView.ViewHolder,
+            ) {
+                super.clearView(rv, holder)
+                holder.itemView.alpha = 1f
+                profileManager.reorderProfiles(sceneChipAdapter.orderedIds())
+            }
+        }
+    )
+
+    private fun installSystemBarInsets() {
+        val rootStartTop = binding.root.paddingTop
+        val rootStartLeft = binding.root.paddingLeft
+        val rootStartRight = binding.root.paddingRight
+        val tabStartBottom = binding.bottomTabBar.paddingBottom
+
+        ViewCompat.setOnApplyWindowInsetsListener(binding.root) { view, insets ->
+            val systemBars = insets.getInsets(WindowInsetsCompat.Type.systemBars())
+            view.updatePadding(
+                left = rootStartLeft + systemBars.left,
+                top = rootStartTop + systemBars.top,
+                right = rootStartRight + systemBars.right,
+            )
+            binding.bottomTabBar.updatePadding(
+                bottom = tabStartBottom + systemBars.bottom
+            )
+            insets
+        }
+        ViewCompat.requestApplyInsets(binding.root)
     }
 
     override fun onStop() {
@@ -109,63 +260,143 @@ class MainActivity : AppCompatActivity() {
         if (liveActive) stopLive()
     }
 
-    private fun withMic(action: PendingAction) {
-        val granted = ContextCompat.checkSelfPermission(
-            this, Manifest.permission.RECORD_AUDIO
-        ) == PackageManager.PERMISSION_GRANTED
-        if (granted) dispatch(action)
-        else {
-            pending = action
-            requestMic.launch(Manifest.permission.RECORD_AUDIO)
+    override fun onResume() {
+        super.onResume()
+        profileManager.refreshFromStorage()
+    }
+
+    private fun renderWordmark() {
+        val raw = getString(R.string.app_name_html)
+        binding.wordmark.text = if (Build.VERSION.SDK_INT >= 24)
+            Html.fromHtml(raw, Html.FROM_HTML_MODE_LEGACY)
+        else
+            @Suppress("DEPRECATION") Html.fromHtml(raw)
+    }
+
+    // --- Pinned alerts ---
+
+    private fun refreshPinnedSection(animate: Boolean = true) {
+        val alerts = pinnedAlertTracker.snapshot()
+        pinnedAdapter.submitList(alerts)
+        val nowVisible = alerts.isNotEmpty()
+        binding.pinnedAlertsSection.visibility = if (nowVisible) View.VISIBLE else View.GONE
+        if (nowVisible != pinnedSectionVisible) {
+            pinnedSectionVisible = nowVisible
+            applyLiveToggleState(expanded = !nowVisible, animate = animate)
         }
     }
 
-    private fun dispatch(action: PendingAction) = when (action) {
-        PendingAction.STEREO_TEST -> runStereoTest()
-        PendingAction.MIC_PROBE -> runMicProbe()
-        PendingAction.MULTI_PROBE -> runMultiProbe()
-        PendingAction.LIVE_START -> startLive()
+    private fun applyLiveToggleState(expanded: Boolean, animate: Boolean) {
+        val dp = resources.displayMetrics.density
+        val targetBtnPadH = ((if (expanded) 46 else 24) * dp).toInt()
+        val targetBtnPadV = ((if (expanded) 21 else 12) * dp).toInt()
+        val targetContainerPadBottom = ((if (expanded) 32 else 2) * dp).toInt()
+
+        if (animate) {
+            val fromPadH = binding.liveToggle.paddingLeft
+            val fromPadV = binding.liveToggle.paddingTop
+            val fromContainerPad = binding.liveToggleContainer.paddingBottom
+
+            ValueAnimator.ofFloat(0f, 1f).apply {
+                duration = 320
+                interpolator = DecelerateInterpolator()
+                addUpdateListener { anim ->
+                    val t = anim.animatedFraction
+                    val padH = (fromPadH + (targetBtnPadH - fromPadH) * t).toInt()
+                    val padV = (fromPadV + (targetBtnPadV - fromPadV) * t).toInt()
+                    val contPad = (fromContainerPad + (targetContainerPadBottom - fromContainerPad) * t).toInt()
+                    binding.liveToggle.setPadding(padH, padV, padH, padV)
+                    binding.liveToggleContainer.setPadding(
+                        binding.liveToggleContainer.paddingLeft,
+                        binding.liveToggleContainer.paddingTop,
+                        binding.liveToggleContainer.paddingRight,
+                        contPad,
+                    )
+                }
+                start()
+            }
+        } else {
+            binding.liveToggle.setPadding(targetBtnPadH, targetBtnPadV, targetBtnPadH, targetBtnPadV)
+            binding.liveToggleContainer.setPadding(
+                binding.liveToggleContainer.paddingLeft,
+                binding.liveToggleContainer.paddingTop,
+                binding.liveToggleContainer.paddingRight,
+                targetContainerPadBottom,
+            )
+        }
     }
+
+    // --- Profile chips ---
+
+    private fun observeProfiles() {
+        lifecycleScope.launch {
+            repeatOnLifecycle(Lifecycle.State.STARTED) {
+                profileManager.allProfiles.collect { profiles ->
+                    sceneChipAdapter.submitProfiles(profiles, profileManager.activeProfile.value.id)
+                }
+            }
+        }
+        lifecycleScope.launch {
+            repeatOnLifecycle(Lifecycle.State.STARTED) {
+                profileManager.activeProfile.collect { profile ->
+                    fusionStage.applyProfile(profile)
+                    sceneChipAdapter.setActiveId(profile.id)
+                }
+            }
+        }
+    }
+
+    private fun showDeleteProfileDialog(profile: SoundProfile) {
+        AlertDialog.Builder(this)
+            .setTitle("Delete \"${profile.name}\"?")
+            .setMessage("This will remove the profile and all its custom settings.")
+            .setPositiveButton("Delete") { _, _ -> profileManager.deleteProfile(profile.id) }
+            .setNegativeButton("Cancel", null)
+            .show()
+    }
+
+    // --- Live pipeline ---
 
     private fun onLiveToggle() {
-        if (liveActive) stopLive() else withMic(PendingAction.LIVE_START)
-    }
-
-    private fun onResetBelief() {
-        if (!liveActive) return
-        belief.reset()
-        binding.radar.setBelief(belief.snapshot(), orientationProvider.yawDegrees() ?: 0f, 0f)
+        if (liveActive) {
+            stopLive()
+        } else {
+            val granted = ContextCompat.checkSelfPermission(
+                this, Manifest.permission.RECORD_AUDIO
+            ) == PackageManager.PERMISSION_GRANTED
+            if (granted) startLive()
+            else { pendingStart = true; requestMic.launch(Manifest.permission.RECORD_AUDIO) }
+        }
     }
 
     @SuppressLint("MissingPermission")
     private fun startLive() {
         if (liveActive) return
         liveActive = true
-        binding.liveToggle.text = getString(R.string.stop_live)
-        binding.runTest.isEnabled = false
-        binding.probeMics.isEnabled = false
-        binding.sweepMatrix.isEnabled = false
-        binding.results.text = getString(R.string.live_starting)
 
-        diagnosticsLogger = DiagnosticsLogger.start(applicationContext).also {
-            diagnosticsFilePath = it.file.absolutePath
-        }
+        binding.liveToggle.text = getString(R.string.stop_live)
+        binding.liveToggle.setCompoundDrawablesRelativeWithIntrinsicBounds(
+            R.drawable.ic_pause, 0, 0, 0
+        )
+        binding.statusText.text = getString(R.string.live_starting)
+        binding.radarView.setListening(true)
+
+        diagnosticsLogger = DiagnosticsLogger.start(applicationContext)
         belief.reset()
         lastClassification = null
         classificationFrameCounter = 0
         yawHistory.clear()
         rotateHintFrames = 0
-        binding.resetBelief.isEnabled = true
         orientationProvider.start()
-        binding.radar.setOrientationProvider(orientationProvider)
+        binding.radarView.setOrientationProvider(orientationProvider)
+
         captureManager.start(lifecycleScope)
 
         pipelineJob = lifecycleScope.launch {
             repeatOnLifecycle(Lifecycle.State.STARTED) {
                 captureManager.windows.collectLatest { window ->
                     val frame = processWindow(window)
-                    binding.results.text = frame.text
-                    binding.radar.setData(
+                    binding.radarView.setData(
                         events = frame.events,
                         belief = frame.beliefSnapshot,
                         phoneYawDegrees = frame.phoneYaw,
@@ -173,6 +404,13 @@ class MainActivity : AppCompatActivity() {
                     )
                     binding.rotateHint.visibility =
                         if (frame.showRotateHint) View.VISIBLE else View.GONE
+                    hapticManager.vibrateForHighest(frame.events)
+                    updateStatus(frame.events)
+                    pinnedAlertTracker.onEvents(frame.events)
+                    historyManager.logHighUrgencyEvents(
+                        frame.events, profileManager.activeProfile.value.name
+                    )
+                    withContext(Dispatchers.Main) { refreshPinnedSection() }
                 }
             }
         }
@@ -181,30 +419,27 @@ class MainActivity : AppCompatActivity() {
     private fun stopLive() {
         liveActive = false
         captureManager.stop()
-        binding.radar.setOrientationProvider(null)
+        binding.radarView.setOrientationProvider(null)
         orientationProvider.stop()
-        pipelineJob?.cancel()
-        pipelineJob = null
         diagnosticsLogger?.close()
         diagnosticsLogger = null
+        pipelineJob?.cancel()
+        pipelineJob = null
+
         binding.liveToggle.text = getString(R.string.start_live)
-        binding.runTest.isEnabled = true
-        binding.probeMics.isEnabled = true
-        binding.sweepMatrix.isEnabled = true
-        binding.radar.setEvents(emptyList())
-        binding.radar.setBelief(FloatArray(0), 0f, 0f)
-        binding.resetBelief.isEnabled = false
+        binding.liveToggle.setCompoundDrawablesRelativeWithIntrinsicBounds(
+            R.drawable.ic_mic, 0, 0, 0
+        )
+        binding.statusText.text = getString(R.string.live_idle)
+        binding.radarView.setListening(false)
+        binding.radarView.setEvents(emptyList())
         binding.rotateHint.visibility = View.GONE
+
         val err = captureManager.lastErrorMessage()
-        binding.results.text = when {
-            err != null -> "Capture stopped — error: $err"
-            diagnosticsFilePath != null -> "Capture stopped.\nDiagnostics CSV: $diagnosticsFilePath\n\nPull with:\n  adb pull \"$diagnosticsFilePath\""
-            else -> getString(R.string.live_idle)
-        }
+        if (err != null) binding.statusText.text = "Stopped — error: $err"
     }
 
     private data class Frame(
-        val text: String,
         val events: List<SoundEvent>,
         val beliefSnapshot: FloatArray,
         val phoneYaw: Float,
@@ -246,7 +481,6 @@ class MainActivity : AppCompatActivity() {
         // with confidence ~0.95; the stub classifier emits the same label. Treat it as the
         // absence of a real sound — scan topK for the first non-Silence label above the
         // confidence floor instead of just looking at top-1.
-        val topLabel = classification.topK.firstOrNull()
         val activeLabel = classification.topK.firstOrNull {
             it.confidence > 0.3f && !it.label.equals(SILENCE_LABEL, ignoreCase = true)
         }
@@ -255,15 +489,10 @@ class MainActivity : AppCompatActivity() {
             belief.update(multi.sub.bottomIld, yaw)
         } else {
             // Silence (or no IMU sample yet) — fade the belief faster toward uniform so a
-            // stale peak doesn't linger. update() reverts to the normal decayRate when
-            // sound returns, so no flag-flipping is needed.
+            // stale peak doesn't linger.
             belief.decayOnly(SILENCE_DECAY_RATE)
         }
 
-        // Render the radar arrow at the raw belief argmax so it tracks measurement updates
-        // in real time (no rate-limited EMA). The Bayesian decay/likelihood step inside
-        // belief.update already provides temporal smoothing of the underlying distribution;
-        // an extra display-side EMA only added perceptible lag between the halo and arrow.
         val peakAngle = belief.argmaxDegrees()
         val intensity = belief.maxBelief()
 
@@ -288,10 +517,6 @@ class MainActivity : AppCompatActivity() {
         )
 
         Frame(
-            text = renderLive(
-                window, classification.topK, multi.full, multi.sub, events, yaw,
-                peakAngle, intensity,
-            ),
             events = events,
             beliefSnapshot = belief.snapshot(),
             phoneYaw = yaw ?: 0f,
@@ -299,115 +524,6 @@ class MainActivity : AppCompatActivity() {
             beliefIntensity = intensity,
             showRotateHint = showRotateHint,
         )
-    }
-
-    private fun renderLive(
-        window: AudioWindow,
-        topK: List<com.echoai.ml.LabeledScore>,
-        localization: LocalizationResult,
-        sub: LocalizationResult,
-        events: List<SoundEvent>,
-        yawDegrees: Float?,
-        beliefPeakAngle: Float,
-        beliefIntensity: Float,
-    ): String = buildString {
-        appendLine("DIAGNOSTIC  win #${window.frameNumber}  ${window.sampleRate}Hz  $classifierBackend")
-        appendLine("Hold flat, ROTATE the phone slowly while a sound source is active.")
-        appendLine("Belief halo around the radar shows world-frame source direction.")
-        appendLine()
-
-        appendLine("IMU / belief:")
-        appendLine("  phone yaw  ${yawDegrees?.let { "%6.1f°".format(it) } ?: "    ?  "}  (world heading of TOP edge)")
-        appendLine("  belief peak  ${"%6.1f°".format(beliefPeakAngle)}  i=${"%.3f".format(beliefIntensity)}")
-        appendLine()
-
-        appendLine("Per-channel RMS (max ${RMS_BAR_MAX.toInt()}):")
-        appendLine("  bot L  ${bar(localization.bottomLeftRms, RMS_BAR_MAX)}  ${"%5.0f".format(localization.bottomLeftRms)}")
-        appendLine("  bot R  ${bar(localization.bottomRightRms, RMS_BAR_MAX)}  ${"%5.0f".format(localization.bottomRightRms)}")
-        appendLine("  bk  L  ${bar(localization.backLeftRms, RMS_BAR_MAX)}  ${"%5.0f".format(localization.backLeftRms)}")
-        appendLine("  bk  R  ${bar(localization.backRightRms, RMS_BAR_MAX)}  ${"%5.0f".format(localization.backRightRms)}")
-        appendLine()
-
-        appendLine("Within-pair ILD  (R−L)/(R+L):")
-        appendLine("  bot   ${centeredBar(localization.bottomIld)}  ${"%+.3f".format(localization.bottomIld)}  → radar X (L/R)")
-        appendLine("  back  ${centeredBar(localization.backIld)}  ${"%+.3f".format(localization.backIld)}  → radar Y (TOP/BOT)?")
-        appendLine()
-
-        appendLine("Within-pair lag (samples, ±${LAG_RANGE}):")
-        appendLine(
-            "  bot   ${centeredBar(localization.withinPairBottom.samples / LAG_RANGE.toFloat())}  ${"%+3d".format(localization.withinPairBottom.samples)}  c=${"%.2f".format(localization.withinPairBottom.confidence)}"
-        )
-        appendLine(
-            "  back  ${centeredBar(localization.withinPairBack.samples / LAG_RANGE.toFloat())}  ${"%+3d".format(localization.withinPairBack.samples)}  c=${"%.2f".format(localization.withinPairBack.confidence)}"
-        )
-        appendLine()
-
-        appendLine("Cross-pair (front/back, weak signal — AGC-suppressed):")
-        appendLine("  fb_bias    ${centeredBar(localization.frontBackBias)}  ${"%+.3f".format(localization.frontBackBias)}")
-        appendLine(
-            "  cross lag  ${centeredBar(localization.crossPairLag.samples / 100f)}  ${"%+4d".format(localization.crossPairLag.samples)}  c=${"%.2f".format(localization.crossPairLag.confidence)}"
-        )
-        appendLine()
-
-        // Top event azimuth — both axes side-by-side for radar interpretation.
-        val devicePos = events.firstOrNull()?.devicePosition
-        val azX = devicePos?.azimuthFromBottomIld()
-        val azY = devicePos?.yAxisFromBackIld()
-        val azLag = devicePos?.azimuthFromLag()
-        appendLine("Top-event radar position:")
-        appendLine("  X (L/R)        ${azX?.let { "%+6.1f°".format(it) } ?: "  ?   "}  bottom_ild")
-        appendLine("  Y (TOP/BOT)    ${azY?.let { "%+6.1f°".format(it) } ?: "  ?   "}  back_ild")
-        appendLine("  diag: lag-az   ${azLag?.let { "%+6.1f°".format(it) } ?: "  ?   "}  bot/back lag")
-        appendLine()
-
-        appendLine("Top-${topK.size} classification:")
-        if (topK.isEmpty()) appendLine("  (no labels)")
-        for (s in topK) {
-            appendLine("  %-16s ${bar(s.confidence, 1f)}  %.2f".format(s.label.take(16), s.confidence))
-        }
-        appendLine()
-
-        appendLine("Active events (${events.size}):")
-        if (events.isEmpty()) appendLine("  (none)")
-        for (e in events) {
-            val ageMs = (window.captureTimestampNanos - e.firstSeenTimestampNanos) / 1_000_000
-            val xa = e.devicePosition.azimuthFromBottomIld()
-            val ya = e.devicePosition.yAxisFromBackIld()
-            val xText = xa?.let { "X=%+5.1f°".format(it) } ?: "X=  ?  "
-            val yText = ya?.let { "Y=%+5.1f°".format(it) } ?: "Y=  ?  "
-            appendLine(
-                "  %-16s ${bar(e.confidence, 1f)}  $xText  $yText  age=%4dms".format(
-                    e.label.take(16), ageMs
-                )
-            )
-        }
-    }
-
-    private fun bar(value: Float, max: Float, width: Int = 12): String {
-        val frac = (value / max).coerceIn(0f, 1f)
-        val full = (frac * width).toInt()
-        val sb = StringBuilder(width)
-        repeat(full) { sb.append('▆') }
-        repeat(width - full) { sb.append('▁') }
-        return sb.toString()
-    }
-
-    /** value in [-1, +1] → 13-cell bar with center marker | and current marker *. */
-    private fun centeredBar(value: Float, width: Int = 13): String {
-        val v = value.coerceIn(-1f, 1f)
-        val center = width / 2
-        val pos = (center + v * center).toInt().coerceIn(0, width - 1)
-        val sb = StringBuilder(width + 2)
-        sb.append('[')
-        for (i in 0 until width) {
-            sb.append(when {
-                i == pos -> '*'
-                i == center -> '|'
-                else -> '─'
-            })
-        }
-        sb.append(']')
-        return sb.toString()
     }
 
     private fun recordYaw(timestampNanos: Long, yawDeg: Float?) {
@@ -434,12 +550,15 @@ class MainActivity : AppCompatActivity() {
         return total
     }
 
+    private fun updateStatus(events: List<SoundEvent>) {
+        binding.statusText.text = when {
+            events.isEmpty() -> getString(R.string.listening_no_sounds)
+            events.size == 1 -> getString(R.string.listening_one_sound, events.first().label)
+            else -> getString(R.string.listening_n_sounds, events.size)
+        }
+    }
+
     companion object {
-        /** RMS bar full-scale. CAMCORDER's AGC keeps speech around 1000–3000; 4000 gives
-         *  visible response without saturating in normal use. */
-        private const val RMS_BAR_MAX = 4000f
-        /** Within-pair lag search range; matches MAX_LAG_WITHIN in LocalizationStage. */
-        private const val LAG_RANGE = 16
         /** Run YAMNet on every Nth pipeline window. With HOP_FRAMES = 2000 (8 Hz), N=4
          *  gives 2 Hz classification while localization + belief update runs at full 8 Hz. */
         private const val CLASSIFY_EVERY_N = 4
@@ -455,51 +574,5 @@ class MainActivity : AppCompatActivity() {
         /** Consecutive frames the (audio + still) condition must hold before showing the hint
          *  (~1.5 s at 8 Hz). Hides immediately when either condition flips. */
         private const val ROTATE_HINT_DEBOUNCE_FRAMES = 12
-    }
-
-    @SuppressLint("MissingPermission")
-    private fun runStereoTest() {
-        binding.runTest.isEnabled = false
-        binding.results.text = getString(R.string.recording_in_progress)
-        lifecycleScope.launch {
-            val result = withContext(Dispatchers.IO) { StereoMicTest.run() }
-            binding.results.text = result.message
-            binding.runTest.isEnabled = true
-        }
-    }
-
-    @SuppressLint("MissingPermission")
-    private fun runMicProbe() {
-        setDiagBusy(R.string.probing_mics)
-        lifecycleScope.launch {
-            val report = withContext(Dispatchers.IO) { MicCapabilityProbe.run(applicationContext) }
-            binding.results.text = report
-            setDiagIdle()
-        }
-    }
-
-    @SuppressLint("MissingPermission")
-    private fun runMultiProbe() {
-        setDiagBusy(R.string.sweeping_matrix)
-        lifecycleScope.launch {
-            val report = withContext(Dispatchers.IO) { MultiStreamProbe.run(applicationContext) }
-            binding.results.text = report
-            setDiagIdle()
-        }
-    }
-
-    private fun setDiagBusy(messageRes: Int) {
-        binding.liveToggle.isEnabled = false
-        binding.runTest.isEnabled = false
-        binding.probeMics.isEnabled = false
-        binding.sweepMatrix.isEnabled = false
-        binding.results.text = getString(messageRes)
-    }
-
-    private fun setDiagIdle() {
-        binding.liveToggle.isEnabled = true
-        binding.runTest.isEnabled = true
-        binding.probeMics.isEnabled = true
-        binding.sweepMatrix.isEnabled = true
     }
 }

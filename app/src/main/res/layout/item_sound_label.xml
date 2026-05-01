@@ -1,0 +1,44 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools"
+    android:layout_width="match_parent"
+    android:layout_height="wrap_content"
+    android:background="@drawable/bg_label_row"
+    android:gravity="center_vertical"
+    android:orientation="horizontal"
+    android:paddingHorizontal="12dp"
+    android:paddingVertical="10dp">
+
+    <CheckBox
+        android:id="@+id/checkBox"
+        android:layout_width="22dp"
+        android:layout_height="22dp"
+        android:background="@drawable/bg_checkbox"
+        android:button="@null"
+        android:contentDescription="@null" />
+
+    <TextView
+        android:id="@+id/labelName"
+        android:layout_width="0dp"
+        android:layout_height="wrap_content"
+        android:layout_marginStart="12dp"
+        android:layout_weight="1"
+        android:textColor="@color/text"
+        android:textSize="14sp"
+        tools:text="Fire Alarm" />
+
+    <TextView
+        android:id="@+id/urgencyBadge"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:background="@drawable/bg_urgency_badge"
+        android:fontFamily="sans-serif-medium"
+        android:letterSpacing="0.07"
+        android:paddingHorizontal="8dp"
+        android:paddingVertical="3dp"
+        android:textAllCaps="true"
+        android:textSize="10sp"
+        android:textStyle="bold"
+        tools:text="CRITICAL" />
+
+</LinearLayout>

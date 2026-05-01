@@ -1,4 +1,42 @@
+<?xml version="1.0" encoding="utf-8"?>
 <resources>
     <color name="black">#FF000000</color>
     <color name="white">#FFFFFFFF</color>
+
+    <!-- App palette (warm linen / cream) -->
+    <color name="bg">#FFFFFF</color>
+    <color name="bgAlt">#FAFAF9</color>
+    <color name="surface">#F5F3F0</color>
+    <color name="surface2">#ECEAE6</color>
+    <color name="border">#12000000</color>     <!-- rgba(0,0,0,0.07) -->
+    <color name="borderMed">#1F000000</color>  <!-- rgba(0,0,0,0.12) -->
+    <color name="text">#18181B</color>
+    <color name="muted">#A0998E</color>
+    <color name="accent">#4A7C6F</color>
+    <color name="accentBg">#1A4A7C6F</color>
+    <color name="tabBar">#F5F3F0</color>
+    <color name="overlayScrim">#A6000000</color>
+
+    <!-- Urgency palette (safety critical) -->
+    <color name="urgency_critical">#D63A2F</color>
+    <color name="urgency_critical_bg">#24D63A2F</color>
+    <color name="urgency_critical_text">#B82E24</color>
+
+    <color name="urgency_high">#D4700A</color>
+    <color name="urgency_high_bg">#24D4700A</color>
+    <color name="urgency_high_text">#B85C00</color>
+
+    <color name="urgency_medium">#A8880A</color>
+    <color name="urgency_medium_bg">#24A8880A</color>
+    <color name="urgency_medium_text">#876C08</color>
+
+    <color name="urgency_low">#2A7FC4</color>
+    <color name="urgency_low_bg">#242A7FC4</color>
+    <color name="urgency_low_text">#1F65A0</color>
+
+    <!-- Radar -->
+    <color name="radar_ring_idle">#1A000000</color>
+    <color name="radar_ring_active">#2E000000</color>
+    <color name="radar_axis">#1F000000</color>
+    <color name="radar_pip">#1C1917</color>
 </resources>

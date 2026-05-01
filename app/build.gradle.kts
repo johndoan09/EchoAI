@@ -60,4 +60,5 @@ dependencies {
     implementation(libs.androidx.lifecycle.runtime.ktx)
     implementation(libs.kotlinx.coroutines.android)
     implementation(libs.tensorflow.lite)
+    implementation(libs.androidx.recyclerview)
 }

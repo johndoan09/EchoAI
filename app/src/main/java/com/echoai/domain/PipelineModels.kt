@@ -51,10 +51,12 @@ data class LagSample(val samples: Int, val confidence: Float)
 data class SoundEvent(
     val label: String,
     val confidence: Float,
+    val urgency: Urgency,
     val firstSeenTimestampNanos: Long,
     val lastSeenTimestampNanos: Long,
     val devicePosition: DevicePosition,
     val worldOrientation: FloatArray?,
+    val isPrioritized: Boolean = false,
 )
 
 data class DevicePosition(
