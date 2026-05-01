@@ -61,4 +61,5 @@ dependencies {
     implementation(libs.kotlinx.coroutines.android)
     implementation(libs.tensorflow.lite)
     implementation(libs.androidx.recyclerview)
+    testImplementation(libs.junit)
 }
