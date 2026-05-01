@@ -25,6 +25,7 @@ import com.echoai.domain.PinnedAlertTracker
 import com.echoai.domain.ProfileManager
 import com.echoai.domain.SoundEvent
 import com.echoai.domain.SoundProfile
+import com.echoai.domain.SoundHistoryManager
 import com.echoai.domain.UrgencyClassifier
 import com.echoai.ml.SoundClassifier
 import com.echoai.ml.StubSoundClassifier
@@ -69,6 +70,7 @@ class MainActivity : AppCompatActivity() {
         FusionStage(EventTracker(urgencyClassifier = urgencyClassifier))
     }
     private val profileManager by lazy { ProfileManager(applicationContext) }
+    private val historyManager by lazy { SoundHistoryManager(applicationContext) }
     private val pinnedAlertTracker = PinnedAlertTracker()
 
     private var pipelineJob: Job? = null
@@ -86,15 +88,25 @@ class MainActivity : AppCompatActivity() {
         binding.eventsList.layoutManager = LinearLayoutManager(this)
         binding.eventsList.adapter = eventAdapter
 
-        pinnedAdapter = PinnedAlertAdapter(onDismiss = { label ->
-            pinnedAlertTracker.acknowledge(label)
-            refreshPinnedSection()
-        })
+        pinnedAdapter = PinnedAlertAdapter(
+            onDismiss = { label ->
+                pinnedAlertTracker.acknowledge(label)
+                refreshPinnedSection()
+            },
+            onTap = { label ->
+                startActivity(Intent(this, HistoryActivity::class.java).apply {
+                    putExtra(HistoryActivity.EXTRA_HIGHLIGHT_LABEL, label)
+                })
+            },
+        )
         binding.pinnedAlertsList.layoutManager = LinearLayoutManager(this)
         binding.pinnedAlertsList.adapter = pinnedAdapter
 
         binding.liveToggle.setOnClickListener { onLiveToggle() }
         binding.editProfileButton.setOnClickListener { openProfileEditor() }
+        binding.historyButton.setOnClickListener {
+            startActivity(Intent(this, HistoryActivity::class.java))
+        }
 
         binding.profileChipGroup.setOnCheckedStateChangeListener { _, checkedIds ->
             if (suppressChipListener) return@setOnCheckedStateChangeListener
@@ -250,6 +262,9 @@ class MainActivity : AppCompatActivity() {
                     hapticManager.vibrateForHighest(events)
                     updateStatus(events)
                     pinnedAlertTracker.onEvents(events)
+                    historyManager.logHighUrgencyEvents(
+                        events, profileManager.activeProfile.value.name
+                    )
                     withContext(Dispatchers.Main) { refreshPinnedSection() }
                 }
             }

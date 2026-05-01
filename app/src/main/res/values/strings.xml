@@ -15,4 +15,6 @@
     <string name="profile_office">Office</string>
     <string name="missed_alerts">Pinned Alerts</string>
 <string name="mic_permission_denied">Microphone permission denied. Grant it in Settings → Apps → echoAI → Permissions.</string>
+    <string name="history">History</string>
+    <string name="no_history">No high-urgency sounds detected in the past 24 hours.</string>
 </resources>

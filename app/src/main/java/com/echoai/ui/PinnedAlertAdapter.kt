@@ -15,6 +15,7 @@ import java.util.Locale
 
 class PinnedAlertAdapter(
     private val onDismiss: (label: String) -> Unit,
+    private val onTap: (label: String) -> Unit = {},
 ) : ListAdapter<PinnedAlert, PinnedAlertAdapter.VH>(DIFF) {
 
     private val timeFmt = SimpleDateFormat("h:mm a", Locale.getDefault())
@@ -34,6 +35,7 @@ class PinnedAlertAdapter(
         b.priorityIcon.visibility = if (alert.isPrioritized) View.VISIBLE else View.GONE
         b.timeText.text = timeFmt.format(Date(alert.detectedAtMs))
         b.dismissButton.setOnClickListener { onDismiss(alert.label) }
+        holder.binding.root.setOnClickListener { onTap(alert.label) }
     }
 
     companion object {
