@@ -1,13 +1,14 @@
 package com.echoai.ui
 
 import android.os.Bundle
+import android.text.Editable
+import android.text.TextWatcher
 import androidx.appcompat.app.AppCompatActivity
 import androidx.lifecycle.lifecycleScope
 import androidx.recyclerview.widget.LinearLayoutManager
 import com.echoai.databinding.ActivityProfileBinding
 import com.echoai.domain.ProfileManager
 import com.echoai.domain.SoundProfile
-import com.echoai.domain.Urgency
 import com.echoai.domain.UrgencyClassifier
 import com.echoai.util.YamnetLabelLoader
 import kotlinx.coroutines.Dispatchers
@@ -31,11 +32,8 @@ class ProfileActivity : AppCompatActivity() {
         val urgencyClassifier = UrgencyClassifier(applicationContext)
         val profile = profileManager.getProfile(profileId)
 
-        setSupportActionBar(binding.toolbar)
-        supportActionBar?.apply {
-            title = "${profile.name} Profile"
-            setDisplayHomeAsUpEnabled(true)
-        }
+        binding.profileTitle.text = getString(com.echoai.R.string.tab_scene_profile)
+        binding.backButton.setOnClickListener { finish() }
 
         adapter = SoundLabelAdapter(
             urgencyClassifier = urgencyClassifier,
@@ -57,12 +55,11 @@ class ProfileActivity : AppCompatActivity() {
         binding.labelsList.layoutManager = LinearLayoutManager(this)
         binding.labelsList.adapter = adapter
 
-        binding.searchView.setOnQueryTextListener(object :
-            androidx.appcompat.widget.SearchView.OnQueryTextListener {
-            override fun onQueryTextSubmit(q: String?) = false
-            override fun onQueryTextChange(q: String?): Boolean {
-                adapter.filter(q ?: "")
-                return true
+        binding.searchInput.addTextChangedListener(object : TextWatcher {
+            override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) {}
+            override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) {}
+            override fun afterTextChanged(s: Editable?) {
+                adapter.filter(s?.toString().orEmpty())
             }
         })
 
@@ -76,12 +73,10 @@ class ProfileActivity : AppCompatActivity() {
             val labels = withContext(Dispatchers.IO) { YamnetLabelLoader.loadAll(applicationContext) }
             val current = profileManager.getProfile(profileId)
             adapter.setData(labels, current.priorityLabels, current.urgencyOverrides)
+            binding.profileSubtitle.text = getString(
+                com.echoai.R.string.profile_subtitle, profile.name, labels.size
+            )
         }
-    }
-
-    override fun onSupportNavigateUp(): Boolean {
-        onBackPressedDispatcher.onBackPressed()
-        return true
     }
 
     companion object {

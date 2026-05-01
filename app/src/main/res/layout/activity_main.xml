@@ -4,139 +4,259 @@
     xmlns:tools="http://schemas.android.com/tools"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
+    android:background="@color/bg"
     android:orientation="vertical"
     tools:context=".ui.MainActivity">
 
-    <!-- Header -->
+    <!-- Top bar -->
     <LinearLayout
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
         android:gravity="center_vertical"
         android:orientation="horizontal"
         android:paddingHorizontal="20dp"
-        android:paddingTop="20dp"
+        android:paddingTop="12dp"
         android:paddingBottom="8dp">
 
-        <LinearLayout
+        <FrameLayout
+            android:layout_width="34dp"
+            android:layout_height="34dp"
+            android:background="@drawable/bg_logo_tile">
+
+            <ImageView
+                android:layout_width="18dp"
+                android:layout_height="18dp"
+                android:layout_gravity="center"
+                android:contentDescription="@null"
+                android:src="@drawable/ic_headphones" />
+        </FrameLayout>
+
+        <TextView
+            android:id="@+id/wordmark"
             android:layout_width="0dp"
             android:layout_height="wrap_content"
+            android:layout_marginStart="10dp"
             android:layout_weight="1"
-            android:orientation="vertical">
-
-            <TextView
-                android:id="@+id/title"
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:text="@string/app_name"
-                android:textAppearance="?attr/textAppearanceHeadlineMedium" />
-
-            <TextView
-                android:id="@+id/subtitle"
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:text="@string/app_tagline"
-                android:textAppearance="?attr/textAppearanceBodySmall"
-                android:textColor="?attr/colorOnSurfaceVariant" />
-        </LinearLayout>
+            android:fontFamily="sans-serif-black"
+            android:letterSpacing="-0.03"
+            android:textColor="@color/text"
+            android:textSize="20sp"
+            android:textStyle="bold"
+            tools:text="echoAI" />
 
         <ImageButton
             android:id="@+id/historyButton"
-            style="?attr/materialIconButtonStyle"
-            android:layout_width="48dp"
-            android:layout_height="48dp"
+            android:layout_width="38dp"
+            android:layout_height="38dp"
+            android:background="@drawable/bg_icon_button"
             android:contentDescription="@string/history"
-            android:src="@android:drawable/ic_menu_recent_history" />
-
-        <com.google.android.material.button.MaterialButton
-            android:id="@+id/editProfileButton"
-            style="?attr/materialButtonOutlinedStyle"
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:text="@string/edit_profile"
-            android:textSize="12sp" />
-
+            android:padding="9dp"
+            android:src="@drawable/ic_clock"
+            app:tint="@color/muted" />
     </LinearLayout>
 
-    <!-- Profile selector chips -->
+    <!-- Scene chips -->
     <HorizontalScrollView
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:paddingHorizontal="16dp"
-        android:paddingBottom="4dp"
+        android:paddingHorizontal="20dp"
+        android:paddingBottom="10dp"
         android:scrollbars="none">
 
-        <com.google.android.material.chip.ChipGroup
-            android:id="@+id/profileChipGroup"
+        <LinearLayout
+            android:id="@+id/sceneChipRow"
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
-            app:selectionRequired="true"
-            app:singleSelection="true" />
+            android:orientation="horizontal" />
     </HorizontalScrollView>
 
-    <!-- Start / Stop button -->
-    <com.google.android.material.button.MaterialButton
-        android:id="@+id/liveToggle"
+    <!-- Radar (placeholder) -->
+    <FrameLayout
+        android:layout_width="match_parent"
+        android:layout_height="0dp"
+        android:layout_weight="1"
+        android:paddingBottom="8dp">
+
+        <com.echoai.ui.RadarView
+            android:id="@+id/radarView"
+            android:layout_width="match_parent"
+            android:layout_height="match_parent" />
+    </FrameLayout>
+
+    <!-- Floating Start/Listening pill button -->
+    <LinearLayout
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:layout_marginHorizontal="20dp"
-        android:layout_marginTop="8dp"
-        android:layout_marginBottom="12dp"
-        android:text="@string/start_live"
-        android:textAllCaps="false"
-        android:textSize="16sp" />
+        android:gravity="center"
+        android:paddingHorizontal="16dp"
+        android:paddingTop="8dp"
+        android:paddingBottom="4dp">
 
-    <!-- Status line -->
+        <Button
+            android:id="@+id/liveToggle"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:background="@drawable/bg_pill_button_accent"
+            android:drawableStart="@drawable/ic_mic"
+            android:drawablePadding="10dp"
+            android:drawableTint="@color/white"
+            android:fontFamily="sans-serif-medium"
+            android:letterSpacing="-0.01"
+            android:minHeight="0dp"
+            android:paddingHorizontal="24dp"
+            android:paddingVertical="12dp"
+            android:stateListAnimator="@null"
+            android:text="@string/start_live"
+            android:textAllCaps="false"
+            android:textColor="@color/white"
+            android:textSize="15sp"
+            android:textStyle="bold" />
+    </LinearLayout>
+
+    <!-- Status line (kept for accessibility / debugging — visually subtle) -->
     <TextView
         android:id="@+id/statusText"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
+        android:gravity="center"
         android:paddingHorizontal="20dp"
-        android:paddingBottom="4dp"
+        android:paddingTop="6dp"
+        android:paddingBottom="2dp"
         android:text="@string/live_idle"
-        android:textAppearance="?attr/textAppearanceBodyMedium"
-        android:textColor="?attr/colorOnSurfaceVariant" />
+        android:textColor="@color/muted"
+        android:textSize="11sp" />
 
-    <!-- Missed alerts section (shown when there are unacknowledged HIGH/CRITICAL events) -->
-    <TextView
-        android:id="@+id/missedAlertsHeader"
+    <!-- Pinned alerts section -->
+    <LinearLayout
+        android:id="@+id/pinnedAlertsSection"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:paddingHorizontal="20dp"
-        android:paddingTop="8dp"
-        android:paddingBottom="4dp"
-        android:text="@string/missed_alerts"
-        android:textAppearance="?attr/textAppearanceTitleSmall"
-        android:textColor="?attr/colorError"
-        android:visibility="gone" />
+        android:orientation="vertical"
+        android:paddingHorizontal="16dp"
+        android:paddingBottom="8dp"
+        android:visibility="gone"
+        tools:visibility="visible">
 
-    <androidx.recyclerview.widget.RecyclerView
-        android:id="@+id/pinnedAlertsList"
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:gravity="center_vertical"
+            android:orientation="horizontal"
+            android:paddingHorizontal="4dp"
+            android:paddingTop="6dp"
+            android:paddingBottom="10dp">
+
+            <TextView
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:fontFamily="sans-serif-medium"
+                android:letterSpacing="0.08"
+                android:text="@string/missed_alerts"
+                android:textAllCaps="true"
+                android:textColor="@color/muted"
+                android:textSize="11sp"
+                android:textStyle="bold" />
+
+            <TextView
+                android:id="@+id/clearAllButton"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:background="?attr/selectableItemBackground"
+                android:fontFamily="sans-serif-medium"
+                android:padding="4dp"
+                android:text="@string/clear_all"
+                android:textColor="@color/accent"
+                android:textSize="12sp"
+                android:textStyle="bold" />
+        </LinearLayout>
+
+        <androidx.recyclerview.widget.RecyclerView
+            android:id="@+id/pinnedAlertsList"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:maxHeight="280dp"
+            android:nestedScrollingEnabled="true"
+            android:overScrollMode="never" />
+    </LinearLayout>
+
+    <!-- Bottom tab bar -->
+    <View
+        android:layout_width="match_parent"
+        android:layout_height="1dp"
+        android:background="@color/borderMed" />
+
+    <LinearLayout
+        android:id="@+id/bottomTabBar"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:clipToPadding="false"
-        android:paddingHorizontal="12dp"
-        android:visibility="gone" />
+        android:background="@color/tabBar"
+        android:orientation="horizontal"
+        android:paddingTop="6dp"
+        android:paddingBottom="6dp">
 
-    <!-- Detected sounds header (visible only when live + events present) -->
-    <TextView
-        android:id="@+id/eventsHeader"
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:paddingHorizontal="20dp"
-        android:paddingTop="8dp"
-        android:paddingBottom="4dp"
-        android:text="@string/detected_sounds"
-        android:textAppearance="?attr/textAppearanceTitleSmall"
-        android:visibility="gone" />
+        <LinearLayout
+            android:id="@+id/tabListening"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:background="?attr/selectableItemBackground"
+            android:clickable="true"
+            android:focusable="true"
+            android:gravity="center"
+            android:orientation="vertical"
+            android:paddingVertical="6dp">
 
-    <!-- Active events list -->
-    <androidx.recyclerview.widget.RecyclerView
-        android:id="@+id/eventsList"
-        android:layout_width="match_parent"
-        android:layout_height="0dp"
-        android:layout_weight="1"
-        android:clipToPadding="false"
-        android:paddingHorizontal="12dp"
-        android:paddingBottom="12dp" />
+            <ImageView
+                android:id="@+id/tabListeningIcon"
+                android:layout_width="22dp"
+                android:layout_height="22dp"
+                android:contentDescription="@null"
+                android:src="@drawable/ic_headphones"
+                app:tint="@color/accent" />
+
+            <TextView
+                android:id="@+id/tabListeningLabel"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="4dp"
+                android:fontFamily="sans-serif-medium"
+                android:text="@string/tab_listening"
+                android:textColor="@color/accent"
+                android:textSize="11sp"
+                android:textStyle="bold" />
+        </LinearLayout>
+
+        <LinearLayout
+            android:id="@+id/tabProfile"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:background="?attr/selectableItemBackground"
+            android:clickable="true"
+            android:focusable="true"
+            android:gravity="center"
+            android:orientation="vertical"
+            android:paddingVertical="6dp">
+
+            <ImageView
+                android:id="@+id/tabProfileIcon"
+                android:layout_width="22dp"
+                android:layout_height="22dp"
+                android:contentDescription="@null"
+                android:src="@drawable/ic_people"
+                app:tint="@color/muted" />
+
+            <TextView
+                android:id="@+id/tabProfileLabel"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="4dp"
+                android:fontFamily="sans-serif-medium"
+                android:text="@string/tab_scene_profile"
+                android:textColor="@color/muted"
+                android:textSize="11sp" />
+        </LinearLayout>
+    </LinearLayout>
 
 </LinearLayout>

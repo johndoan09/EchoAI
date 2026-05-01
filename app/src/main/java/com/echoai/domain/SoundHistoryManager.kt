@@ -46,6 +46,21 @@ class SoundHistoryManager(context: Context) {
         if (changed) save(prune(entries, now))
     }
 
+    fun dismiss(timestampMs: Long, label: String) {
+        val entries = loadRaw()
+        val kept = JSONArray()
+        for (i in 0 until entries.length()) {
+            val obj = entries.getJSONObject(i)
+            if (obj.getLong(KEY_TIMESTAMP) == timestampMs && obj.getString(KEY_LABEL) == label) continue
+            kept.put(obj)
+        }
+        save(kept)
+    }
+
+    fun clearAll() {
+        save(JSONArray())
+    }
+
     fun getHistory(): List<HistoryEntry> {
         val entries = prune(loadRaw(), System.currentTimeMillis())
         save(entries)

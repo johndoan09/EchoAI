@@ -1,9 +1,12 @@
 package com.echoai.ui
 
-import android.app.AlertDialog
+import android.content.Context
+import android.graphics.drawable.GradientDrawable
 import android.view.LayoutInflater
 import android.view.ViewGroup
+import androidx.core.content.ContextCompat
 import androidx.recyclerview.widget.RecyclerView
+import com.echoai.R
 import com.echoai.databinding.ItemSoundLabelBinding
 import com.echoai.domain.Urgency
 import com.echoai.domain.UrgencyClassifier
@@ -38,7 +41,9 @@ class SoundLabelAdapter(
     private fun applyFilter() {
         val base = if (query.isBlank()) allLabels
         else allLabels.filter { it.contains(query, ignoreCase = true) }
-        filtered = base.sortedWith(compareByDescending<String> { it in checkedLabels }.thenBy { it.lowercase() })
+        filtered = base.sortedWith(
+            compareByDescending<String> { it in checkedLabels }.thenBy { it.lowercase() }
+        )
         notifyDataSetChanged()
     }
 
@@ -50,59 +55,62 @@ class SoundLabelAdapter(
     override fun onBindViewHolder(holder: VH, position: Int) {
         val label = filtered[position]
         val b = holder.binding
+        val ctx = holder.itemView.context
+        val density = ctx.resources.displayMetrics.density
+        val isChecked = label in checkedLabels
 
         b.checkBox.setOnCheckedChangeListener(null)
         b.labelName.text = label
-        b.checkBox.isChecked = label in checkedLabels
+        b.checkBox.isChecked = isChecked
+
+        b.root.isActivated = isChecked
+        b.labelName.setTextColor(
+            ContextCompat.getColor(ctx, if (isChecked) R.color.text else R.color.muted)
+        )
+        b.labelName.typeface = if (isChecked)
+            android.graphics.Typeface.create("sans-serif-medium", android.graphics.Typeface.NORMAL)
+        else
+            android.graphics.Typeface.create("sans-serif", android.graphics.Typeface.NORMAL)
 
         val isOverridden = label in urgencyOverrides
         val effectiveUrgency = urgencyOverrides[label] ?: urgencyClassifier.classify(label)
+
+        val badgeBg = GradientDrawable().apply {
+            shape = GradientDrawable.RECTANGLE
+            cornerRadius = 5f * density
+            setColor(effectiveUrgency.tintBackground)
+            setStroke((1 * density).toInt(), withAlpha(effectiveUrgency.color, 0x55))
+        }
+        b.urgencyBadge.background = badgeBg
         b.urgencyBadge.text = effectiveUrgency.name
-        b.urgencyBadge.setTextColor(effectiveUrgency.color)
-        // Underline when overridden to signal customization
+        b.urgencyBadge.setTextColor(effectiveUrgency.textColor)
         b.urgencyBadge.paintFlags = if (isOverridden)
             b.urgencyBadge.paintFlags or android.graphics.Paint.UNDERLINE_TEXT_FLAG
         else
             b.urgencyBadge.paintFlags and android.graphics.Paint.UNDERLINE_TEXT_FLAG.inv()
 
-        b.checkBox.setOnCheckedChangeListener { _, isChecked ->
-            if (isChecked) checkedLabels.add(label) else checkedLabels.remove(label)
-            onToggle(label, isChecked)
+        b.checkBox.setOnCheckedChangeListener { _, isChk ->
+            if (isChk) checkedLabels.add(label) else checkedLabels.remove(label)
+            onToggle(label, isChk)
             applyFilter()
         }
 
         b.urgencyBadge.setOnClickListener {
-            showUrgencyPicker(holder, label, effectiveUrgency, isOverridden)
+            UrgencyPickerSheet.show(ctx, label, effectiveUrgency, isOverridden) { chosen ->
+                if (chosen == null) {
+                    urgencyOverrides = urgencyOverrides - label
+                    onUrgencyChange(label, null)
+                } else {
+                    urgencyOverrides = urgencyOverrides + (label to chosen)
+                    onUrgencyChange(label, chosen)
+                }
+                notifyDataSetChanged()
+            }
         }
     }
 
     override fun getItemCount() = filtered.size
 
-    private fun showUrgencyPicker(
-        holder: VH,
-        label: String,
-        current: Urgency,
-        isOverridden: Boolean,
-    ) {
-        val urgencyOptions = Urgency.entries.map { it.name }
-        val options = (urgencyOptions + "Reset to default").toTypedArray()
-        val resetIdx = urgencyOptions.size
-        val currentIdx = if (isOverridden) Urgency.entries.indexOf(current) else -1
-
-        AlertDialog.Builder(holder.itemView.context)
-            .setTitle("Urgency for \"$label\"")
-            .setSingleChoiceItems(options, currentIdx) { dialog, which ->
-                if (which == resetIdx) {
-                    urgencyOverrides = urgencyOverrides - label
-                    onUrgencyChange(label, null)
-                } else {
-                    val chosen = Urgency.entries[which]
-                    urgencyOverrides = urgencyOverrides + (label to chosen)
-                    onUrgencyChange(label, chosen)
-                }
-                notifyDataSetChanged()
-                dialog.dismiss()
-            }
-            .show()
-    }
+    private fun withAlpha(rgb: Int, alpha: Int): Int =
+        (rgb and 0x00FFFFFF) or ((alpha and 0xFF) shl 24)
 }

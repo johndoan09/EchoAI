@@ -5,10 +5,17 @@ import android.annotation.SuppressLint
 import android.app.AlertDialog
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.os.Build
 import android.os.Bundle
+import android.text.Html
+import android.view.LayoutInflater
 import android.view.View
+import android.view.ViewGroup
 import android.widget.EditText
 import android.widget.FrameLayout
+import android.widget.ImageView
+import android.widget.LinearLayout
+import android.widget.TextView
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.content.ContextCompat
@@ -34,7 +41,6 @@ import com.echoai.pipeline.ClassificationStage
 import com.echoai.pipeline.FusionStage
 import com.echoai.pipeline.LocalizationStage
 import com.echoai.util.HapticManager
-import com.google.android.material.chip.Chip
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.async
@@ -46,7 +52,6 @@ import kotlinx.coroutines.withContext
 class MainActivity : AppCompatActivity() {
 
     private lateinit var binding: ActivityMainBinding
-    private lateinit var eventAdapter: SoundEventAdapter
     private lateinit var pinnedAdapter: PinnedAlertAdapter
 
     private var pendingStart = false
@@ -76,17 +81,14 @@ class MainActivity : AppCompatActivity() {
     private var pipelineJob: Job? = null
     private var liveActive = false
 
-    private val chipMap = mutableMapOf<String, Chip>()
-    private var suppressChipListener = false
+    private val sceneChips = mutableMapOf<String, View>()
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         binding = ActivityMainBinding.inflate(layoutInflater)
         setContentView(binding.root)
 
-        eventAdapter = SoundEventAdapter()
-        binding.eventsList.layoutManager = LinearLayoutManager(this)
-        binding.eventsList.adapter = eventAdapter
+        renderWordmark()
 
         pinnedAdapter = PinnedAlertAdapter(
             onDismiss = { label ->
@@ -103,17 +105,20 @@ class MainActivity : AppCompatActivity() {
         binding.pinnedAlertsList.adapter = pinnedAdapter
 
         binding.liveToggle.setOnClickListener { onLiveToggle() }
-        binding.editProfileButton.setOnClickListener { openProfileEditor() }
         binding.historyButton.setOnClickListener {
             startActivity(Intent(this, HistoryActivity::class.java))
         }
-
-        binding.profileChipGroup.setOnCheckedStateChangeListener { _, checkedIds ->
-            if (suppressChipListener) return@setOnCheckedStateChangeListener
-            val chipId = checkedIds.firstOrNull() ?: return@setOnCheckedStateChangeListener
-            val profileId = chipMap.entries.firstOrNull { it.value.id == chipId }?.key
-                ?: return@setOnCheckedStateChangeListener
-            profileManager.setActiveProfileId(profileId)
+        binding.clearAllButton.setOnClickListener {
+            pinnedAlertTracker.snapshot().forEach { pinnedAlertTracker.acknowledge(it.label) }
+            refreshPinnedSection()
+        }
+        binding.tabListening.setOnClickListener { /* already here */ }
+        binding.tabProfile.setOnClickListener {
+            startActivity(
+                Intent(this, ProfileActivity::class.java).apply {
+                    putExtra(ProfileActivity.EXTRA_PROFILE_ID, profileManager.activeProfile.value.id)
+                }
+            )
         }
 
         observeProfiles()
@@ -124,14 +129,20 @@ class MainActivity : AppCompatActivity() {
         if (liveActive) stopLive()
     }
 
-    // --- Missed alerts ---
+    private fun renderWordmark() {
+        val raw = getString(R.string.app_name_html)
+        binding.wordmark.text = if (Build.VERSION.SDK_INT >= 24)
+            Html.fromHtml(raw, Html.FROM_HTML_MODE_LEGACY)
+        else
+            @Suppress("DEPRECATION") Html.fromHtml(raw)
+    }
+
+    // --- Pinned alerts ---
 
     private fun refreshPinnedSection() {
         val alerts = pinnedAlertTracker.snapshot()
         pinnedAdapter.submitList(alerts)
-        val visible = alerts.isNotEmpty()
-        binding.missedAlertsHeader.visibility = if (visible) View.VISIBLE else View.GONE
-        binding.pinnedAlertsList.visibility = if (visible) View.VISIBLE else View.GONE
+        binding.pinnedAlertsSection.visibility = if (alerts.isEmpty()) View.GONE else View.VISIBLE
     }
 
     // --- Profile chips ---
@@ -153,50 +164,96 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun rebuildChips(profiles: List<SoundProfile>) {
-        suppressChipListener = true
-        binding.profileChipGroup.removeAllViews()
-        chipMap.clear()
+        binding.sceneChipRow.removeAllViews()
+        sceneChips.clear()
         val activeId = profileManager.activeProfile.value.id
         for (profile in profiles) {
-            val chip = makeFilterChip(profile.name).apply {
-                isChecked = profile.id == activeId
-                if (!profile.isPreset) {
-                    setOnLongClickListener { showDeleteProfileDialog(profile); true }
-                }
+            val chip = makeSceneChip(profile, profile.id == activeId)
+            binding.sceneChipRow.addView(chip)
+            sceneChips[profile.id] = chip
+            chip.setOnClickListener { profileManager.setActiveProfileId(profile.id) }
+            if (!profile.isPreset) {
+                chip.setOnLongClickListener { showDeleteProfileDialog(profile); true }
             }
-            binding.profileChipGroup.addView(chip)
-            chipMap[profile.id] = chip
         }
-        binding.profileChipGroup.addView(makeActionChip("+").apply {
-            setOnClickListener { showCreateProfileDialog() }
-        })
-        suppressChipListener = false
+        binding.sceneChipRow.addView(makeAddChip())
     }
 
     private fun syncChipSelection(activeId: String) {
-        suppressChipListener = true
-        chipMap[activeId]?.let { binding.profileChipGroup.check(it.id) }
-        suppressChipListener = false
+        for ((id, view) in sceneChips) styleChip(view, id == activeId)
     }
 
-    private fun makeFilterChip(label: String): Chip =
-        Chip(this, null, com.google.android.material.R.attr.chipStyle).apply {
-            id = View.generateViewId()
-            text = label
-            isCheckable = true
+    private fun makeSceneChip(profile: SoundProfile, active: Boolean): View {
+        val container = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = android.view.Gravity.CENTER_VERTICAL
+            setPadding(dp(16), dp(8), dp(16), dp(8))
+            layoutParams = LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT
+            ).apply { marginEnd = dp(8) }
         }
+        val icon = ImageView(this).apply {
+            setImageResource(iconForProfile(profile.name))
+            layoutParams = LinearLayout.LayoutParams(dp(13), dp(13)).apply {
+                marginEnd = dp(6)
+            }
+        }
+        val text = TextView(this).apply {
+            text = profile.name
+            textSize = 13f
+            typeface = android.graphics.Typeface.create("sans-serif-medium", android.graphics.Typeface.BOLD)
+            letterSpacing = 0f
+        }
+        container.addView(icon)
+        container.addView(text)
+        styleChip(container, active)
+        return container
+    }
 
-    private fun makeActionChip(label: String): Chip =
-        Chip(this, null, com.google.android.material.R.attr.chipStyle).apply {
-            id = View.generateViewId()
-            text = label
-            isCheckable = false
+    private fun styleChip(view: View, active: Boolean) {
+        view.background = ContextCompat.getDrawable(
+            this,
+            if (active) R.drawable.bg_chip_active else R.drawable.bg_chip_inactive
+        )
+        val color = if (active) ContextCompat.getColor(this, R.color.bg)
+                    else ContextCompat.getColor(this, R.color.muted)
+        if (view is LinearLayout) {
+            for (i in 0 until view.childCount) {
+                val child = view.getChildAt(i)
+                if (child is TextView) child.setTextColor(color)
+                if (child is ImageView) child.setColorFilter(color)
+            }
         }
+    }
+
+    private fun makeAddChip(): View {
+        val container = FrameLayout(this).apply {
+            background = ContextCompat.getDrawable(this@MainActivity, R.drawable.bg_chip_add)
+            layoutParams = LinearLayout.LayoutParams(dp(36), dp(36))
+        }
+        val icon = ImageView(this).apply {
+            setImageResource(R.drawable.ic_plus)
+            layoutParams = FrameLayout.LayoutParams(dp(16), dp(16), android.view.Gravity.CENTER)
+        }
+        container.addView(icon)
+        container.setOnClickListener { showCreateProfileDialog() }
+        return container
+    }
+
+    private fun iconForProfile(name: String): Int {
+        val n = name.lowercase()
+        return when {
+            "home" in n -> R.drawable.ic_house
+            "office" in n || "work" in n -> R.drawable.ic_briefcase
+            else -> R.drawable.ic_building
+        }
+    }
 
     private fun showCreateProfileDialog() {
         val editText = EditText(this).apply { hint = "Profile name"; setSingleLine() }
         val container = FrameLayout(this).apply {
-            val pad = (20 * resources.displayMetrics.density).toInt()
+            val pad = dp(20)
             setPadding(pad, pad / 2, pad, 0)
             addView(editText)
         }
@@ -223,14 +280,6 @@ class MainActivity : AppCompatActivity() {
             .show()
     }
 
-    private fun openProfileEditor() {
-        startActivity(
-            Intent(this, ProfileActivity::class.java).apply {
-                putExtra(ProfileActivity.EXTRA_PROFILE_ID, profileManager.activeProfile.value.id)
-            }
-        )
-    }
-
     // --- Live pipeline ---
 
     private fun onLiveToggle() {
@@ -250,15 +299,18 @@ class MainActivity : AppCompatActivity() {
         if (liveActive) return
         liveActive = true
         binding.liveToggle.text = getString(R.string.stop_live)
+        binding.liveToggle.setCompoundDrawablesRelativeWithIntrinsicBounds(
+            R.drawable.ic_pause, 0, 0, 0
+        )
         binding.statusText.text = getString(R.string.live_starting)
-        binding.eventsHeader.visibility = View.VISIBLE
+        binding.radarView.setListening(true)
         captureManager.start(lifecycleScope)
 
         pipelineJob = lifecycleScope.launch {
             repeatOnLifecycle(Lifecycle.State.STARTED) {
                 captureManager.windows.collectLatest { window ->
                     val events = processWindow(window)
-                    eventAdapter.submitList(events)
+                    binding.radarView.setEvents(events)
                     hapticManager.vibrateForHighest(events)
                     updateStatus(events)
                     pinnedAlertTracker.onEvents(events)
@@ -277,9 +329,12 @@ class MainActivity : AppCompatActivity() {
         pipelineJob?.cancel()
         pipelineJob = null
         binding.liveToggle.text = getString(R.string.start_live)
+        binding.liveToggle.setCompoundDrawablesRelativeWithIntrinsicBounds(
+            R.drawable.ic_mic, 0, 0, 0
+        )
         binding.statusText.text = getString(R.string.live_idle)
-        binding.eventsHeader.visibility = View.GONE
-        eventAdapter.submitList(emptyList())
+        binding.radarView.setListening(false)
+        binding.radarView.setEvents(emptyList())
         val err = captureManager.lastErrorMessage()
         if (err != null) binding.statusText.text = "Stopped — error: $err"
     }
@@ -301,4 +356,6 @@ class MainActivity : AppCompatActivity() {
             else -> getString(R.string.listening_n_sounds, events.size)
         }
     }
+
+    private fun dp(v: Int): Int = (v * resources.displayMetrics.density).toInt()
 }

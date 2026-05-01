@@ -1,8 +1,9 @@
 <resources>
     <string name="app_name">echoAI</string>
+    <string name="app_name_html"><![CDATA[echo<font color="#4A7C6F">AI</font>]]></string>
     <string name="app_tagline">Hear what matters</string>
     <string name="start_live">Start Listening</string>
-    <string name="stop_live">Stop Listening</string>
+    <string name="stop_live">Listening Active</string>
     <string name="live_starting">Starting capture…</string>
     <string name="live_idle">Tap Start to begin listening.</string>
     <string name="listening_no_sounds">Listening… no sounds detected yet.</string>
@@ -14,7 +15,18 @@
     <string name="profile_home">Home</string>
     <string name="profile_office">Office</string>
     <string name="missed_alerts">Pinned Alerts</string>
-<string name="mic_permission_denied">Microphone permission denied. Grant it in Settings → Apps → echoAI → Permissions.</string>
+    <string name="clear_all">Clear All</string>
+    <string name="back">Back</string>
+    <string name="reset">Reset</string>
+    <string name="search_sounds">Search sounds…</string>
+    <string name="set_urgency_for">Set urgency for</string>
+    <string name="reset_to_default">Reset to default</string>
+    <string name="tab_listening">Listening</string>
+    <string name="tab_scene_profile">Scene Profile</string>
+    <string name="dismiss">Dismiss</string>
+    <string name="mic_permission_denied">Microphone permission denied. Grant it in Settings → Apps → echoAI → Permissions.</string>
     <string name="history">History</string>
     <string name="no_history">No high-urgency sounds detected in the past 24 hours.</string>
+    <string name="profile_subtitle"><![CDATA[%1$s · %2$d sounds]]></string>
 </resources>
+

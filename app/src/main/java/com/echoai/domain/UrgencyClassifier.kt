@@ -5,10 +5,20 @@ import android.util.Log
 import org.json.JSONObject
 
 enum class Urgency(val color: Int, val ordinalRank: Int) {
-    CRITICAL(0xFFE53935.toInt(), 3),
-    HIGH(0xFFFB8C00.toInt(), 2),
-    MEDIUM(0xFFFDD835.toInt(), 1),
-    LOW(0xFF42A5F5.toInt(), 0);
+    CRITICAL(0xFFD63A2F.toInt(), 3),
+    HIGH(0xFFD4700A.toInt(), 2),
+    MEDIUM(0xFFA8880A.toInt(), 1),
+    LOW(0xFF2A7FC4.toInt(), 0);
+
+    /** Tinted background color used for badges / banner backgrounds (urgency.color × 0.14 alpha). */
+    val tintBackground: Int get() = (color and 0x00FFFFFF) or 0x24000000
+    /** Darker text color used inside badges, per design tokens. */
+    val textColor: Int get() = when (this) {
+        CRITICAL -> 0xFFB82E24.toInt()
+        HIGH -> 0xFFB85C00.toInt()
+        MEDIUM -> 0xFF876C08.toInt()
+        LOW -> 0xFF1F65A0.toInt()
+    }
 }
 
 /**

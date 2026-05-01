@@ -1,23 +1,32 @@
 package com.echoai.ui
 
+import android.animation.ValueAnimator
 import android.content.Context
 import android.graphics.Canvas
 import android.graphics.Paint
+import android.graphics.RectF
 import android.util.AttributeSet
 import android.view.View
+import android.view.animation.LinearInterpolator
+import androidx.core.content.ContextCompat
+import com.echoai.R
 import com.echoai.domain.SoundEvent
 import kotlin.math.min
-import kotlin.math.sin
 
 /**
- * 2-D device-frame radar.
- *  - Vertical axis: front (top) ↔ back (bottom), driven by `frontBackBias`.
- *  - Horizontal axis: left ↔ right, driven by `azimuthDegrees`.
- *  - Each event is a dot colored by urgency tier, sized by confidence.
+ * 2-D device-frame radar — **placeholder**.
  *
- * Currently device-frame only. When `WorldOrientationProvider` is wired, transform
- * each event's stored device-frame position into world frame and rotate the radar
- * background instead of the dots, so sources stay fixed as the user rotates the phone.
+ * Visual structure follows the design handoff:
+ *   - 4 concentric elliptical rings (25 / 50 / 75 / 100 % of the available radius)
+ *   - vertical + horizontal axis lines
+ *   - FRONT / REAR / L / R directional labels
+ *   - center pip (dark circle + white inner dot)
+ *   - rotating sweep + 3 staggered pulse rings while listening
+ *
+ * The localization team is still working out how raw GCC-PHAT estimates should map onto
+ * this surface, so this view intentionally does **not** plot the SoundEvent stream yet.
+ * `setEvents(...)` keeps the stored list around so the wiring in MainActivity stays
+ * intact; replace `drawEventDots()` once the mapping is finalized.
  */
 class RadarView @JvmOverloads constructor(
     context: Context,
@@ -25,102 +34,165 @@ class RadarView @JvmOverloads constructor(
     defStyleAttr: Int = 0,
 ) : View(context, attrs, defStyleAttr) {
 
+    @Suppress("unused")
     private var events: List<SoundEvent> = emptyList()
+
+    private var listening: Boolean = false
 
     private val ringPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         style = Paint.Style.STROKE
-        color = 0xFF2A2F36.toInt()
-        strokeWidth = 1.5f
+        strokeWidth = dp(1f)
     }
     private val axisPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         style = Paint.Style.STROKE
-        color = 0xFF3A4049.toInt()
-        strokeWidth = 1f
+        strokeWidth = dp(0.8f)
     }
     private val labelPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        color = 0xFF6B7280.toInt()
-        textSize = 26f
+        textSize = sp(11f)
         textAlign = Paint.Align.CENTER
+        isFakeBoldText = true
+        letterSpacing = 0.06f
+        alpha = 204
     }
-    private val userPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        color = 0xFF1F6FEB.toInt()
-        style = Paint.Style.FILL
-    }
-    private val userRingPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        color = 0x551F6FEB.toInt()
+    private val sweepPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         style = Paint.Style.STROKE
-        strokeWidth = 2f
+        strokeCap = Paint.Cap.ROUND
+        strokeWidth = dp(1.6f)
     }
-    private val dotPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        style = Paint.Style.FILL
-    }
-    private val dotLabelPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        color = 0xFFE7EBF0.toInt()
-        textSize = 30f
-        textAlign = Paint.Align.LEFT
-    }
-    private val dotLabelShadowPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        color = 0xCC0F1115.toInt()
-        textSize = 30f
-        textAlign = Paint.Align.LEFT
+    private val pulsePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         style = Paint.Style.STROKE
-        strokeWidth = 4f
+        strokeWidth = dp(1.2f)
+    }
+    private val pipFillPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.FILL }
+    private val pipInnerPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.FILL }
+
+    private var sweepDeg: Float = 0f
+    private var pulseProgress: Float = 0f
+
+    private val sweepAnimator = ValueAnimator.ofFloat(0f, 360f).apply {
+        duration = SWEEP_PERIOD_MS
+        interpolator = LinearInterpolator()
+        repeatCount = ValueAnimator.INFINITE
+        addUpdateListener {
+            sweepDeg = it.animatedValue as Float
+            postInvalidateOnAnimation()
+        }
+    }
+    private val pulseAnimator = ValueAnimator.ofFloat(0f, 1f).apply {
+        duration = PULSE_PERIOD_MS
+        interpolator = LinearInterpolator()
+        repeatCount = ValueAnimator.INFINITE
+        addUpdateListener {
+            pulseProgress = it.animatedValue as Float
+            postInvalidateOnAnimation()
+        }
     }
 
+    init {
+        ringPaint.color = ContextCompat.getColor(context, R.color.radar_ring_idle)
+        axisPaint.color = ContextCompat.getColor(context, R.color.radar_axis)
+        labelPaint.color = ContextCompat.getColor(context, R.color.muted)
+        sweepPaint.color = 0x59000000.toInt()      // rgba(0,0,0,0.35)
+        pulsePaint.color = 0x80000000.toInt()      // rgba(0,0,0,0.5)
+        pipFillPaint.color = ContextCompat.getColor(context, R.color.radar_pip)
+        pipInnerPaint.color = ContextCompat.getColor(context, R.color.surface)
+    }
+
+    /** Wiring point for the localization team — kept on the API surface so the
+     *  rest of the pipeline doesn't need to change when real plotting lands. */
     fun setEvents(events: List<SoundEvent>) {
         this.events = events
+        // Intentional no-op for now — see class kdoc.
+    }
+
+    fun setListening(active: Boolean) {
+        if (listening == active) return
+        listening = active
+        ringPaint.color = ContextCompat.getColor(
+            context,
+            if (active) R.color.radar_ring_active else R.color.radar_ring_idle,
+        )
+        if (active) {
+            sweepAnimator.start()
+            pulseAnimator.start()
+        } else {
+            sweepAnimator.cancel()
+            pulseAnimator.cancel()
+            sweepDeg = 0f
+            pulseProgress = 0f
+        }
         invalidate()
+    }
+
+    override fun onDetachedFromWindow() {
+        super.onDetachedFromWindow()
+        sweepAnimator.cancel()
+        pulseAnimator.cancel()
     }
 
     override fun onDraw(canvas: Canvas) {
         super.onDraw(canvas)
+        if (width == 0 || height == 0) return
+
         val cx = width / 2f
         val cy = height / 2f
-        val r = min(cx, cy) * 0.92f
+        val labelInset = dp(20f)
+        val maxRx = (width / 2f) - labelInset
+        val maxRy = (height / 2f) - labelInset
+        if (maxRx <= 0f || maxRy <= 0f) return
 
-        for (frac in floatArrayOf(0.33f, 0.66f, 1.0f)) {
-            canvas.drawCircle(cx, cy, r * frac, ringPaint)
+        // Elliptical rings
+        for (frac in floatArrayOf(0.25f, 0.5f, 0.75f, 1f)) {
+            val rx = maxRx * frac
+            val ry = maxRy * frac
+            canvas.drawOval(RectF(cx - rx, cy - ry, cx + rx, cy + ry), ringPaint)
         }
-        canvas.drawLine(cx - r, cy, cx + r, cy, axisPaint)
-        canvas.drawLine(cx, cy - r, cx, cy + r, axisPaint)
 
-        canvas.drawText("FRONT", cx, cy - r - 6f, labelPaint)
-        canvas.drawText("BACK", cx, cy + r + 28f, labelPaint)
-        canvas.drawText("L", cx - r - 14f, cy + 10f, labelPaint)
-        canvas.drawText("R", cx + r + 14f, cy + 10f, labelPaint)
+        // Axes
+        canvas.drawLine(cx, cy - maxRy, cx, cy + maxRy, axisPaint)
+        canvas.drawLine(cx - maxRx, cy, cx + maxRx, cy, axisPaint)
 
-        canvas.drawCircle(cx, cy, 14f, userPaint)
-        canvas.drawCircle(cx, cy, 22f, userRingPaint)
+        // Direction labels
+        val baseline = labelPaint.fontMetrics
+        val textOffset = (-(baseline.ascent + baseline.descent)) / 2f
+        canvas.drawText("FRONT", cx, cy - maxRy - dp(8f), labelPaint)
+        canvas.drawText("REAR", cx, cy + maxRy + dp(16f), labelPaint)
+        val sideLabelPaint = Paint(labelPaint)
+        sideLabelPaint.textAlign = Paint.Align.LEFT
+        canvas.drawText("L", dp(2f), cy + textOffset, sideLabelPaint)
+        sideLabelPaint.textAlign = Paint.Align.RIGHT
+        canvas.drawText("R", width - dp(2f), cy + textOffset, sideLabelPaint)
 
-        for (event in events) {
-            val az = event.devicePosition.azimuthDegrees() ?: 0f
-            val xNorm = sin(Math.toRadians(az.toDouble())).toFloat()
-            // CAMCORDER's per-recorder AGC suppresses raw RMS bias to ±0.05–0.15 in
-            // typical use; amplify here so the y-axis is visually meaningful. The raw
-            // (unamplified) bias is logged in the diagnostics CSV for honest analysis.
-            val yNorm = (-event.devicePosition.frontBackBias * FRONT_BACK_SENSITIVITY)
-                .coerceIn(-1f, 1f)
-            val ex = cx + xNorm * r * 0.82f
-            val ey = cy + yNorm * r * 0.82f
+        if (listening) {
+            // Pulse rings — 3 staggered animations from center
+            val baseRadius = dp(6f)
+            val maxScale = 3.2f
+            for (i in 0..2) {
+                val phase = ((pulseProgress + i / 3f) % 1f)
+                val scale = lerp(0.2f, maxScale, phase)
+                val alpha = ((1f - phase) * 0.8f * 255f).toInt().coerceIn(0, 255)
+                pulsePaint.alpha = alpha
+                canvas.drawCircle(cx, cy, baseRadius * scale, pulsePaint)
+            }
 
-            val dotR = 14f + 22f * event.confidence.coerceIn(0f, 1f)
-            dotPaint.color = event.urgency.color
-            dotPaint.alpha = 255
-            canvas.drawCircle(ex, ey, dotR, dotPaint)
-
-            val labelX = ex + dotR + 6f
-            val labelY = ey + 10f
-            canvas.drawText(event.label, labelX, labelY, dotLabelShadowPaint)
-            canvas.drawText(event.label, labelX, labelY, dotLabelPaint)
+            // Sweep line
+            val sweepRad = Math.toRadians((sweepDeg - 90f).toDouble())
+            val sx = cx + maxRx * Math.cos(sweepRad).toFloat()
+            val sy = cy + maxRy * Math.sin(sweepRad).toFloat()
+            canvas.drawLine(cx, cy, sx, sy, sweepPaint)
         }
+
+        // Center pip
+        canvas.drawCircle(cx, cy, dp(5f), pipFillPaint)
+        canvas.drawCircle(cx, cy, dp(2f), pipInnerPaint)
     }
 
+    private fun dp(value: Float): Float = value * resources.displayMetrics.density
+    private fun sp(value: Float): Float = value * resources.displayMetrics.scaledDensity
+    private fun lerp(a: Float, b: Float, t: Float): Float = a + (b - a) * t
+
     companion object {
-        /** Multiplier applied to frontBackBias before clamping. CSV analysis shows raw bias
-         *  rarely exceeds ±0.17 (CAMCORDER AGC normalizes per-recorder), so 8× uses more of
-         *  the radar y-range. Note: this can't fix the underlying signal weakness — when both
-         *  arrays are roughly equidistant from the source, RMS bias is genuinely small.
-         *  Spectral-shadow front/back is the proper next signal source. */
-        private const val FRONT_BACK_SENSITIVITY = 8f
+        private const val SWEEP_PERIOD_MS = 3000L
+        private const val PULSE_PERIOD_MS = 2500L
     }
 }
