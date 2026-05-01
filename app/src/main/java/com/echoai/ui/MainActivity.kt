@@ -19,6 +19,7 @@ import com.echoai.audio.StereoMicTest
 import com.echoai.databinding.ActivityMainBinding
 import com.echoai.diagnostics.DiagnosticsLogger
 import com.echoai.domain.LocalizationResult
+import com.echoai.domain.VectorAccumulator
 import com.echoai.domain.SoundEvent
 import com.echoai.ml.SoundClassifier
 import com.echoai.ml.StubSoundClassifier
@@ -26,6 +27,7 @@ import com.echoai.ml.YamnetClassifier
 import com.echoai.pipeline.ClassificationStage
 import com.echoai.pipeline.FusionStage
 import com.echoai.pipeline.LocalizationStage
+import com.echoai.sensor.RotationVectorProvider
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.async
@@ -33,7 +35,6 @@ import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
-import kotlin.math.sqrt
 
 class MainActivity : AppCompatActivity() {
 
@@ -52,7 +53,8 @@ class MainActivity : AppCompatActivity() {
 
     // Pipeline. YamnetClassifier is the real model; falls back to StubSoundClassifier
     // only if the .tflite asset can't be loaded.
-    private val captureManager by lazy { AudioCaptureManager(applicationContext) }
+    private val orientationProvider by lazy { RotationVectorProvider(applicationContext) }
+    private val captureManager by lazy { AudioCaptureManager(applicationContext, orientationProvider) }
     private val classifier: SoundClassifier by lazy {
         YamnetClassifier.create(applicationContext) ?: StubSoundClassifier()
     }
@@ -62,6 +64,19 @@ class MainActivity : AppCompatActivity() {
     private val classificationStage by lazy { ClassificationStage(classifier) }
     private val localizationStage = LocalizationStage()
     private val fusionStage = FusionStage()
+    // Rotational-aperture localizer using vector summation. Each window contributes a
+    // 2D vote `bot_ild × (cos yaw, sin yaw)`; the accumulated vector points at the
+    // estimated world-frame source direction with magnitude as confidence. Replaces the
+    // earlier cos-Bayesian BeliefDistribution (preserved in git stash@{0}).
+    private val accumulator = VectorAccumulator(
+        decayPerWindow = 0.10f,
+        magnitudeFloor = 0.30f,
+        flipSign = false,
+    )
+
+    /** Empirical max accumulator magnitude we expect, for normalizing to [0, 1] for the
+     *  radar arrow length. Calibrate from `pointer_magnitude` in the diagnostics CSV. */
+    private val pointerMagnitudeMax: Float = 2.5f
 
     private var pipelineJob: Job? = null
     private var liveActive = false
@@ -73,6 +88,7 @@ class MainActivity : AppCompatActivity() {
         binding = ActivityMainBinding.inflate(layoutInflater)
         setContentView(binding.root)
         binding.liveToggle.setOnClickListener { onLiveToggle() }
+        binding.resetBelief.setOnClickListener { onResetBelief() }
         binding.runTest.setOnClickListener { withMic(PendingAction.STEREO_TEST) }
         binding.probeMics.setOnClickListener { withMic(PendingAction.MIC_PROBE) }
         binding.sweepMatrix.setOnClickListener { withMic(PendingAction.MULTI_PROBE) }
@@ -106,6 +122,14 @@ class MainActivity : AppCompatActivity() {
         if (liveActive) stopLive() else withMic(PendingAction.LIVE_START)
     }
 
+    private fun onResetBelief() {
+        if (!liveActive) return
+        accumulator.reset()
+        // Push a null pointer to the radar immediately so the arrow clears without
+        // waiting for the next window emit.
+        binding.radar.setPointer(null, 0f, orientationProvider.yawDegrees() ?: 0f)
+    }
+
     @SuppressLint("MissingPermission")
     private fun startLive() {
         if (liveActive) return
@@ -119,6 +143,9 @@ class MainActivity : AppCompatActivity() {
         diagnosticsLogger = DiagnosticsLogger.start(applicationContext).also {
             diagnosticsFilePath = it.file.absolutePath
         }
+        accumulator.reset()
+        binding.resetBelief.isEnabled = true
+        orientationProvider.start()
         captureManager.start(lifecycleScope)
 
         pipelineJob = lifecycleScope.launch {
@@ -127,6 +154,7 @@ class MainActivity : AppCompatActivity() {
                     val frame = processWindow(window)
                     binding.results.text = frame.text
                     binding.radar.setEvents(frame.events)
+                    binding.radar.setPointer(frame.pointerDirection, frame.pointerMagnitudeNorm, frame.phoneYaw)
                 }
             }
         }
@@ -135,6 +163,7 @@ class MainActivity : AppCompatActivity() {
     private fun stopLive() {
         liveActive = false
         captureManager.stop()
+        orientationProvider.stop()
         pipelineJob?.cancel()
         pipelineJob = null
         diagnosticsLogger?.close()
@@ -144,6 +173,8 @@ class MainActivity : AppCompatActivity() {
         binding.probeMics.isEnabled = true
         binding.sweepMatrix.isEnabled = true
         binding.radar.setEvents(emptyList())
+        binding.radar.setPointer(null, 0f, 0f)
+        binding.resetBelief.isEnabled = false
         val err = captureManager.lastErrorMessage()
         binding.results.text = when {
             err != null -> "Capture stopped — error: $err"
@@ -152,7 +183,13 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    private data class Frame(val text: String, val events: List<SoundEvent>)
+    private data class Frame(
+        val text: String,
+        val events: List<SoundEvent>,
+        val pointerDirection: Float?,
+        val pointerMagnitudeNorm: Float,
+        val phoneYaw: Float,
+    )
 
     private suspend fun processWindow(window: AudioWindow): Frame = coroutineScope {
         val classifyJob = async(Dispatchers.Default) { classificationStage.classify(window) }
@@ -162,28 +199,39 @@ class MainActivity : AppCompatActivity() {
         val events = withContext(Dispatchers.Default) {
             fusionStage.process(classification, multi.full)
         }
-        // Compute per-channel RMS once for both render + diagnostics.
-        val rmsBL = rmsOf(window.bottomLeft)
-        val rmsBR = rmsOf(window.bottomRight)
-        val rmsKL = rmsOf(window.backLeft)
-        val rmsKR = rmsOf(window.backRight)
-        val az = events.firstOrNull()?.devicePosition?.azimuthDegrees()
+        val devicePos = events.firstOrNull()?.devicePosition
+        val azX = devicePos?.azimuthFromBottomIld()
+        val azLag = devicePos?.azimuthFromLag()
+
+        // Rotational-aperture localizer update. Feed bot_ild (within-pair ILD = the long-
+        // axis bias signal that survives AGC). Skip if IMU hasn't produced a sample yet.
+        val yaw = orientationProvider.yawDegrees()
+        if (yaw != null) {
+            accumulator.update(multi.full.bottomIld, yaw)
+        }
+
+        val pointerDirection = accumulator.directionDegrees()
+        val pointerMagnitudeRaw = accumulator.magnitude()
+        val pointerMagnitudeNorm = (pointerMagnitudeRaw / pointerMagnitudeMax).coerceIn(0f, 1f)
 
         diagnosticsLogger?.log(
             window = window,
             topLabel = classification.topK.firstOrNull(),
-            rmsBl = rmsBL, rmsBr = rmsBR, rmsKl = rmsKL, rmsKr = rmsKR,
             full = multi.full,
             sub = multi.sub,
-            azimuthDeg = az,
+            azimuthIldDeg = azX,
+            azimuthLagDeg = azLag,
+            phoneYawDeg = yaw,
+            pointerDirDeg = pointerDirection,
+            pointerMagnitude = pointerMagnitudeRaw,
         )
 
         Frame(
-            text = renderLive(
-                window, classification.topK, multi.full, multi.sub, events,
-                rmsBL, rmsBR, rmsKL, rmsKR,
-            ),
+            text = renderLive(window, classification.topK, multi.full, multi.sub, events, yaw, pointerDirection, pointerMagnitudeRaw),
             events = events,
+            pointerDirection = pointerDirection,
+            pointerMagnitudeNorm = pointerMagnitudeNorm,
+            phoneYaw = yaw ?: 0f,
         )
     }
 
@@ -193,43 +241,59 @@ class MainActivity : AppCompatActivity() {
         localization: LocalizationResult,
         sub: LocalizationResult,
         events: List<SoundEvent>,
-        rmsBL: Float, rmsBR: Float, rmsKL: Float, rmsKR: Float,
+        yawDegrees: Float?,
+        pointerDirection: Float?,
+        pointerMagnitude: Float,
     ): String = buildString {
-        appendLine("LIVE  window #${window.frameNumber}  rate=${window.sampleRate}Hz  backend=$classifierBackend")
+        appendLine("DIAGNOSTIC  win #${window.frameNumber}  ${window.sampleRate}Hz  $classifierBackend")
+        appendLine("Hold flat, ROTATE the phone slowly while a sound source is active.")
+        appendLine("Arrow points at estimated world-frame source direction (device-frame transformed).")
         appendLine()
 
-        appendLine("Channels (RMS, max=${RMS_BAR_MAX}):")
-        appendLine("  bot L  ${bar(rmsBL, RMS_BAR_MAX)}  ${"%5.0f".format(rmsBL)}")
-        appendLine("  bot R  ${bar(rmsBR, RMS_BAR_MAX)}  ${"%5.0f".format(rmsBR)}")
-        appendLine("  bk  L  ${bar(rmsKL, RMS_BAR_MAX)}  ${"%5.0f".format(rmsKL)}")
-        appendLine("  bk  R  ${bar(rmsKR, RMS_BAR_MAX)}  ${"%5.0f".format(rmsKR)}")
+        appendLine("IMU / pointer:")
+        appendLine("  phone yaw  ${yawDegrees?.let { "%6.1f°".format(it) } ?: "    ?  "}  (world heading of TOP edge)")
+        appendLine(
+            "  pointer    ${pointerDirection?.let { "%6.1f°".format(it) } ?: "  none "}  magnitude=${"%.3f".format(pointerMagnitude)}  (floor=0.30, expected_max≈2.5)"
+        )
         appendLine()
 
-        appendLine("Spatial:")
-        appendLine("  F/B  ${centeredBar(localization.frontBackBias)}  ${"%+.2f".format(localization.frontBackBias)}")
-        val approxAz = events.firstOrNull()?.devicePosition?.azimuthDegrees()
-        val azStr = if (approxAz != null) "%+5.1f°".format(approxAz) else "  ?  "
-        val azNorm = (approxAz ?: 0f) / 90f
-        appendLine("  L/R  ${centeredBar(azNorm)}  ${azStr}  (top event)")
-        appendLine("  scale 1s   |  scale 250ms (peak-energy slice)")
+        appendLine("Per-channel RMS (max ${RMS_BAR_MAX.toInt()}):")
+        appendLine("  bot L  ${bar(localization.bottomLeftRms, RMS_BAR_MAX)}  ${"%5.0f".format(localization.bottomLeftRms)}")
+        appendLine("  bot R  ${bar(localization.bottomRightRms, RMS_BAR_MAX)}  ${"%5.0f".format(localization.bottomRightRms)}")
+        appendLine("  bk  L  ${bar(localization.backLeftRms, RMS_BAR_MAX)}  ${"%5.0f".format(localization.backLeftRms)}")
+        appendLine("  bk  R  ${bar(localization.backRightRms, RMS_BAR_MAX)}  ${"%5.0f".format(localization.backRightRms)}")
+        appendLine()
+
+        appendLine("Within-pair ILD  (R−L)/(R+L):")
+        appendLine("  bot   ${centeredBar(localization.bottomIld)}  ${"%+.3f".format(localization.bottomIld)}  → radar X (L/R)")
+        appendLine("  back  ${centeredBar(localization.backIld)}  ${"%+.3f".format(localization.backIld)}  → radar Y (TOP/BOT)?")
+        appendLine()
+
+        appendLine("Within-pair lag (samples, ±${LAG_RANGE}):")
         appendLine(
-            "  cross  lag=%+4d c=%.2f  |  lag=%+4d c=%.2f".format(
-                localization.crossPairLag.samples, localization.crossPairLag.confidence,
-                sub.crossPairLag.samples, sub.crossPairLag.confidence,
-            )
+            "  bot   ${centeredBar(localization.withinPairBottom.samples / LAG_RANGE.toFloat())}  ${"%+3d".format(localization.withinPairBottom.samples)}  c=${"%.2f".format(localization.withinPairBottom.confidence)}"
         )
         appendLine(
-            "  bot LR lag=%+3d c=%.2f   |  lag=%+3d c=%.2f".format(
-                localization.withinPairBottom.samples, localization.withinPairBottom.confidence,
-                sub.withinPairBottom.samples, sub.withinPairBottom.confidence,
-            )
+            "  back  ${centeredBar(localization.withinPairBack.samples / LAG_RANGE.toFloat())}  ${"%+3d".format(localization.withinPairBack.samples)}  c=${"%.2f".format(localization.withinPairBack.confidence)}"
         )
+        appendLine()
+
+        appendLine("Cross-pair (front/back, weak signal — AGC-suppressed):")
+        appendLine("  fb_bias    ${centeredBar(localization.frontBackBias)}  ${"%+.3f".format(localization.frontBackBias)}")
         appendLine(
-            "  bk  LR lag=%+3d c=%.2f   |  lag=%+3d c=%.2f".format(
-                localization.withinPairBack.samples, localization.withinPairBack.confidence,
-                sub.withinPairBack.samples, sub.withinPairBack.confidence,
-            )
+            "  cross lag  ${centeredBar(localization.crossPairLag.samples / 100f)}  ${"%+4d".format(localization.crossPairLag.samples)}  c=${"%.2f".format(localization.crossPairLag.confidence)}"
         )
+        appendLine()
+
+        // Top event azimuth — both axes side-by-side for radar interpretation.
+        val devicePos = events.firstOrNull()?.devicePosition
+        val azX = devicePos?.azimuthFromBottomIld()
+        val azY = devicePos?.yAxisFromBackIld()
+        val azLag = devicePos?.azimuthFromLag()
+        appendLine("Top-event radar position:")
+        appendLine("  X (L/R)        ${azX?.let { "%+6.1f°".format(it) } ?: "  ?   "}  bottom_ild")
+        appendLine("  Y (TOP/BOT)    ${azY?.let { "%+6.1f°".format(it) } ?: "  ?   "}  back_ild")
+        appendLine("  diag: lag-az   ${azLag?.let { "%+6.1f°".format(it) } ?: "  ?   "}  bot/back lag")
         appendLine()
 
         appendLine("Top-${topK.size} classification:")
@@ -243,21 +307,16 @@ class MainActivity : AppCompatActivity() {
         if (events.isEmpty()) appendLine("  (none)")
         for (e in events) {
             val ageMs = (window.captureTimestampNanos - e.firstSeenTimestampNanos) / 1_000_000
-            val az = e.devicePosition.azimuthDegrees()
-            val azText = if (az != null) "az=%+5.1f°".format(az) else "az=  ?  "
+            val xa = e.devicePosition.azimuthFromBottomIld()
+            val ya = e.devicePosition.yAxisFromBackIld()
+            val xText = xa?.let { "X=%+5.1f°".format(it) } ?: "X=  ?  "
+            val yText = ya?.let { "Y=%+5.1f°".format(it) } ?: "Y=  ?  "
             appendLine(
-                "  %-16s ${bar(e.confidence, 1f)}  fb=%+.2f  %s  age=%4dms".format(
-                    e.label.take(16), e.devicePosition.frontBackBias, azText, ageMs
+                "  %-16s ${bar(e.confidence, 1f)}  $xText  $yText  age=%4dms".format(
+                    e.label.take(16), ageMs
                 )
             )
         }
-    }
-
-    private fun rmsOf(s: ShortArray): Float {
-        if (s.isEmpty()) return 0f
-        var sumSq = 0.0
-        for (v in s) sumSq += v.toDouble() * v.toDouble()
-        return sqrt(sumSq / s.size).toFloat()
     }
 
     private fun bar(value: Float, max: Float, width: Int = 12): String {
@@ -291,6 +350,8 @@ class MainActivity : AppCompatActivity() {
         /** RMS bar full-scale. CAMCORDER's AGC keeps speech around 1000–3000; 4000 gives
          *  visible response without saturating in normal use. */
         private const val RMS_BAR_MAX = 4000f
+        /** Within-pair lag search range; matches MAX_LAG_WITHIN in LocalizationStage. */
+        private const val LAG_RANGE = 16
     }
 
     @SuppressLint("MissingPermission")
