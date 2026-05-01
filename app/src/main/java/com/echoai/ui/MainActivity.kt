@@ -189,35 +189,36 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun applyLiveToggleState(expanded: Boolean, animate: Boolean) {
-        val density = resources.displayMetrics.density
-        val targetScale = if (expanded) 1.14f else 1f
-        val targetContainerPadBottom = if (expanded) (28 * density).toInt() else (2 * density).toInt()
+        val dp = resources.displayMetrics.density
+        val targetBtnPadH = ((if (expanded) 46 else 24) * dp).toInt()
+        val targetBtnPadV = ((if (expanded) 21 else 12) * dp).toInt()
+        val targetContainerPadBottom = ((if (expanded) 32 else 2) * dp).toInt()
 
         if (animate) {
-            binding.liveToggle.animate()
-                .scaleX(targetScale)
-                .scaleY(targetScale)
-                .setDuration(320)
-                .setInterpolator(DecelerateInterpolator())
-                .start()
+            val fromPadH = binding.liveToggle.paddingLeft
+            val fromPadV = binding.liveToggle.paddingTop
+            val fromContainerPad = binding.liveToggleContainer.paddingBottom
 
-            ValueAnimator.ofInt(binding.liveToggleContainer.paddingBottom, targetContainerPadBottom)
-                .apply {
-                    duration = 320
-                    interpolator = DecelerateInterpolator()
-                    addUpdateListener {
-                        binding.liveToggleContainer.setPadding(
-                            binding.liveToggleContainer.paddingLeft,
-                            binding.liveToggleContainer.paddingTop,
-                            binding.liveToggleContainer.paddingRight,
-                            it.animatedValue as Int,
-                        )
-                    }
-                    start()
+            ValueAnimator.ofFloat(0f, 1f).apply {
+                duration = 320
+                interpolator = DecelerateInterpolator()
+                addUpdateListener { anim ->
+                    val t = anim.animatedFraction
+                    val padH = (fromPadH + (targetBtnPadH - fromPadH) * t).toInt()
+                    val padV = (fromPadV + (targetBtnPadV - fromPadV) * t).toInt()
+                    val contPad = (fromContainerPad + (targetContainerPadBottom - fromContainerPad) * t).toInt()
+                    binding.liveToggle.setPadding(padH, padV, padH, padV)
+                    binding.liveToggleContainer.setPadding(
+                        binding.liveToggleContainer.paddingLeft,
+                        binding.liveToggleContainer.paddingTop,
+                        binding.liveToggleContainer.paddingRight,
+                        contPad,
+                    )
                 }
+                start()
+            }
         } else {
-            binding.liveToggle.scaleX = targetScale
-            binding.liveToggle.scaleY = targetScale
+            binding.liveToggle.setPadding(targetBtnPadH, targetBtnPadV, targetBtnPadH, targetBtnPadV)
             binding.liveToggleContainer.setPadding(
                 binding.liveToggleContainer.paddingLeft,
                 binding.liveToggleContainer.paddingTop,
@@ -275,19 +276,12 @@ class MainActivity : AppCompatActivity() {
                 ViewGroup.LayoutParams.WRAP_CONTENT
             ).apply { marginEnd = dp(8) }
         }
-        val icon = ImageView(this).apply {
-            setImageResource(iconForProfile(profile.name))
-            layoutParams = LinearLayout.LayoutParams(dp(13), dp(13)).apply {
-                marginEnd = dp(6)
-            }
-        }
         val text = TextView(this).apply {
             text = profile.name
             textSize = 13f
             typeface = android.graphics.Typeface.create("sans-serif-medium", android.graphics.Typeface.BOLD)
             letterSpacing = 0f
         }
-        container.addView(icon)
         container.addView(text)
         styleChip(container, active)
         return container

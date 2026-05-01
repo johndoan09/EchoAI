@@ -169,15 +169,13 @@ class RadarView @JvmOverloads constructor(
         canvas.drawText("R", width - dp(2f), cy + textOffset, sideLabelPaint)
 
         if (listening) {
-            // Pulse rings — 3 staggered animations from center
-            val baseRadius = dp(6f)
-            val maxScale = 3.2f
+            // Pulse rings — 3 staggered animations expanding to the full radar boundary
             for (i in 0..2) {
                 val phase = ((pulseProgress + i / 3f) % 1f)
-                val scale = lerp(0.2f, maxScale, phase)
-                val alpha = ((1f - phase) * 0.8f * 255f).toInt().coerceIn(0, 255)
+                val r = lerp(dp(5f), maxRadius, phase)
+                val alpha = ((1f - phase) * 0.7f * 255f).toInt().coerceIn(0, 255)
                 pulsePaint.alpha = alpha
-                canvas.drawCircle(cx, cy, baseRadius * scale, pulsePaint)
+                canvas.drawCircle(cx, cy, r, pulsePaint)
             }
 
             // Sweep line
