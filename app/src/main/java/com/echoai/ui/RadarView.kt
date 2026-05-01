@@ -81,7 +81,6 @@ class RadarView @JvmOverloads constructor(
     }
     private val pipFillPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.FILL }
     private val pipInnerPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.FILL }
-    private val eventHaloPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.FILL }
     private val chipPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.FILL }
     private val chipTextPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         textSize = sp(10f)
@@ -90,7 +89,7 @@ class RadarView @JvmOverloads constructor(
     }
     private val beliefArcPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         style = Paint.Style.STROKE
-        strokeWidth = dp(11f)
+        strokeWidth = dp(BELIEF_ARC_STROKE_DP)
         strokeCap = Paint.Cap.BUTT
     }
     private val beliefPeakPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
@@ -228,7 +227,7 @@ class RadarView @JvmOverloads constructor(
         sideLabelPaint.textAlign = Paint.Align.RIGHT
         canvas.drawText("R", width - dp(2f), cy + textOffset, sideLabelPaint)
 
-        // Belief halo sits behind the sweep / event dots so interactive elements remain on top.
+        // Belief halo sits behind the sweep / labels so chips and arrows stay on top.
         drawBeliefHalo(canvas, cx, cy, maxRadius)
 
         if (listening) {
@@ -251,7 +250,7 @@ class RadarView @JvmOverloads constructor(
             // Prefer full 2D placement from this label's belief peak (world-frame,
             // rotated into device frame via phoneYawDegrees). Falls back to the legacy
             // Y-only placement from bottomIld when the belief is still flat — gives
-            // sensible dot positions in the first ~second before the IMU sweep has
+            // sensible chip anchor positions in the first ~second before the IMU sweep has
             // accumulated enough evidence.
             val halo = halosByLabel[event.label]
             val haloSharp = halo != null &&
@@ -275,10 +274,6 @@ class RadarView @JvmOverloads constructor(
             val y = cy + (yNorm + stagger).coerceIn(-1f, 1f) * maxRadius * 0.82f
             val color = urgencyColor(event.urgency)
             val textColor = urgencyTextColor(event.urgency)
-
-            eventHaloPaint.color = color
-            eventHaloPaint.alpha = 38
-            canvas.drawCircle(x, y, dp(10f), eventHaloPaint)
 
             val label = event.label.take(18)
             val chipWidth = (chipTextPaint.measureText(label) + dp(16f)).coerceAtLeast(dp(42f))
@@ -332,13 +327,18 @@ class RadarView @JvmOverloads constructor(
             val b = snapshot[i]
             if (b <= uniform) continue
             val intensity = ((b - uniform) / (peakBelief - uniform)).coerceIn(0f, 1f)
-            if (intensity < 0.05f) continue
+            // Cut the angular spread: only bins near the peak draw — avoids lighting half
+            // the ring when the belief still has a broad shoulder or mirror lobe.
+            if (intensity < HALO_ARC_INTENSITY_FLOOR) continue
 
             val worldAngle = i * binSweepDeg
             val deviceAngle = worldAngle - phoneYawDegrees
             val canvasStart = deviceAngle - 90f - binSweepDeg / 2f
 
-            val alpha = (intensity * 220f).toInt().coerceIn(0, 255)
+            // Remap [floor..1] → [0..1] so the wedge stays visible after raising the floor.
+            val t = ((intensity - HALO_ARC_INTENSITY_FLOOR) /
+                (1f - HALO_ARC_INTENSITY_FLOOR)).coerceIn(0f, 1f)
+            val alpha = (t * t * HALO_ARC_MAX_ALPHA).toInt().coerceIn(0, 255)
             beliefArcPaint.color = (alpha shl 24) or rgb
             canvas.drawArc(beliefArcRect, canvasStart, binSweepDeg, false, beliefArcPaint)
         }
@@ -417,13 +417,19 @@ class RadarView @JvmOverloads constructor(
         private const val Y_SENSITIVITY = 1.5f
 
         /** Once `maxBelief > uniform * THRESHOLD`, trust the belief peak enough to place
-         *  the event dot at its world-frame direction rather than the legacy Y-only
+         *  the event chip at its world-frame direction rather than the legacy Y-only
          *  bottomIld fallback. Slightly below the halo-render threshold so any halo that's
-         *  visible also drives 2D dot placement. */
+         *  visible also drives 2D chip placement. */
         private const val HALO_SHARP_THRESHOLD = 1.5f
 
-        /** Radius (fraction of maxRadius) at which belief-driven event dots land. Keeps
-         *  the dot clear of the center pip and inside the halo ring. */
+        /** Stroke width (density-independent px passed to [RadarView.dp]) for belief arcs — thinner than before so the wedge reads as a pointer ring, not a thick donut. */
+        private const val BELIEF_ARC_STROKE_DP = 5f
+        /** Normalized intensity floor vs peak ([b-uniform]/[peak-uniform]); bins below this skip drawing — narrows angular glow vs drawing nearly full-ring shoulders. */
+        private const val HALO_ARC_INTENSITY_FLOOR = 0.38f
+        /** Peak arc alpha after remapping (0–255). */
+        private const val HALO_ARC_MAX_ALPHA = 220f
+
+        /** Radius (fraction of maxRadius) at which event chips anchor when belief-driven. Keeps labels near the perimeter halo ring. */
         private const val EVENT_RADIUS_NORM = 0.7f
 
         /** Minimum yaw change (degrees) before the choreographer-driven refresh issues
