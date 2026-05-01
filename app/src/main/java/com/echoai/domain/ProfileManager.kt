@@ -86,8 +86,20 @@ class ProfileManager(context: Context) {
         val profile = SoundProfile(id = id, name = name, priorityLabels = emptySet(), isPreset = false)
         saveProfile(profile)
         saveCustomIds(loadCustomIds() + id)
+        // Append to saved order if one exists
+        val orderStr = prefs.getString("profile_order", null)
+        if (orderStr != null) {
+            try {
+                prefs.edit().putString("profile_order", JSONArray(orderStr).put(id).toString()).apply()
+            } catch (_: Exception) {}
+        }
         _allProfiles.value = loadAllProfiles()
         return profile
+    }
+
+    fun reorderProfiles(orderedIds: List<String>) {
+        prefs.edit().putString("profile_order", JSONArray(orderedIds).toString()).apply()
+        _allProfiles.value = loadAllProfiles()
     }
 
     fun deleteProfile(id: String) {
@@ -103,8 +115,21 @@ class ProfileManager(context: Context) {
             prefs.getString("active_profile", SoundProfile.DEFAULT_ID) ?: SoundProfile.DEFAULT_ID
         )
 
-    private fun loadAllProfiles(): List<SoundProfile> =
-        SoundProfile.PRESETS + loadCustomIds().map { getProfile(it) }
+    private fun loadAllProfiles(): List<SoundProfile> {
+        val orderStr = prefs.getString("profile_order", null) ?: return (
+            SoundProfile.PRESETS + loadCustomIds().map { getProfile(it) }
+        )
+        return try {
+            val arr = JSONArray(orderStr)
+            val savedIds = (0 until arr.length()).map { arr.getString(it) }
+            val allKnownIds = SoundProfile.PRESETS.map { it.id } + loadCustomIds()
+            val ordered = savedIds.filter { it in allKnownIds } +
+                allKnownIds.filter { it !in savedIds }
+            ordered.map { id -> SoundProfile.PRESETS.firstOrNull { it.id == id } ?: getProfile(id) }
+        } catch (_: Exception) {
+            SoundProfile.PRESETS + loadCustomIds().map { getProfile(it) }
+        }
+    }
 
     private fun loadCustomIds(): List<String> = try {
         val arr = JSONArray(prefs.getString("custom_profile_ids", "[]") ?: "[]")

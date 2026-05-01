@@ -9,15 +9,8 @@ import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Bundle
 import android.text.Html
-import android.view.LayoutInflater
 import android.view.View
-import android.view.ViewGroup
 import android.view.animation.DecelerateInterpolator
-import android.widget.EditText
-import android.widget.FrameLayout
-import android.widget.ImageView
-import android.widget.LinearLayout
-import android.widget.TextView
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.content.ContextCompat
@@ -88,7 +81,7 @@ class MainActivity : AppCompatActivity() {
     private var liveActive = false
     private var pinnedSectionVisible = false
 
-    private val sceneChips = mutableMapOf<String, View>()
+    private lateinit var sceneChipAdapter: SceneChipAdapter
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -130,11 +123,86 @@ class MainActivity : AppCompatActivity() {
             )
         }
 
+        setupSceneChips()
+
         // No alerts on launch — start with the expanded button state immediately (no animation)
         applyLiveToggleState(expanded = true, animate = false)
 
         observeProfiles()
     }
+
+    private fun setupSceneChips() {
+        sceneChipAdapter = SceneChipAdapter(
+            onChipClick = { profileManager.setActiveProfileId(it.id) },
+            onChipLongClick = { showDeleteProfileDialog(it) },
+            onAddClick = {
+                CreateProfileSheet.show(this) { name ->
+                    val profile = profileManager.createProfile(name)
+                    profileManager.setActiveProfileId(profile.id)
+                }
+            },
+            onDragStart = { holder -> chipTouchHelper.startDrag(holder) },
+        )
+
+        binding.sceneChipRow.layoutManager =
+            androidx.recyclerview.widget.LinearLayoutManager(
+                this, androidx.recyclerview.widget.LinearLayoutManager.HORIZONTAL, false
+            )
+        binding.sceneChipRow.adapter = sceneChipAdapter
+
+        chipTouchHelper.attachToRecyclerView(binding.sceneChipRow)
+    }
+
+    private val chipTouchHelper = androidx.recyclerview.widget.ItemTouchHelper(
+        object : androidx.recyclerview.widget.ItemTouchHelper.SimpleCallback(
+            androidx.recyclerview.widget.ItemTouchHelper.LEFT or
+                androidx.recyclerview.widget.ItemTouchHelper.RIGHT, 0
+        ) {
+            override fun isLongPressDragEnabled() = false
+
+            override fun getMovementFlags(
+                rv: androidx.recyclerview.widget.RecyclerView,
+                holder: androidx.recyclerview.widget.RecyclerView.ViewHolder,
+            ) = if (holder.itemViewType == SceneChipAdapter.TYPE_ADD) 0
+                else makeMovementFlags(
+                    androidx.recyclerview.widget.ItemTouchHelper.LEFT or
+                        androidx.recyclerview.widget.ItemTouchHelper.RIGHT, 0
+                )
+
+            override fun onMove(
+                rv: androidx.recyclerview.widget.RecyclerView,
+                from: androidx.recyclerview.widget.RecyclerView.ViewHolder,
+                to: androidx.recyclerview.widget.RecyclerView.ViewHolder,
+            ): Boolean {
+                if (to.itemViewType == SceneChipAdapter.TYPE_ADD) return false
+                sceneChipAdapter.moveItem(from.adapterPosition, to.adapterPosition)
+                return true
+            }
+
+            override fun onSwiped(
+                holder: androidx.recyclerview.widget.RecyclerView.ViewHolder, dir: Int
+            ) {}
+
+            override fun onSelectedChanged(
+                holder: androidx.recyclerview.widget.RecyclerView.ViewHolder?,
+                actionState: Int,
+            ) {
+                super.onSelectedChanged(holder, actionState)
+                if (actionState == androidx.recyclerview.widget.ItemTouchHelper.ACTION_STATE_DRAG) {
+                    holder?.itemView?.alpha = 0.75f
+                }
+            }
+
+            override fun clearView(
+                rv: androidx.recyclerview.widget.RecyclerView,
+                holder: androidx.recyclerview.widget.RecyclerView.ViewHolder,
+            ) {
+                super.clearView(rv, holder)
+                holder.itemView.alpha = 1f
+                profileManager.reorderProfiles(sceneChipAdapter.orderedIds())
+            }
+        }
+    )
 
     private fun installSystemBarInsets() {
         val rootStartTop = binding.root.paddingTop
@@ -233,118 +301,19 @@ class MainActivity : AppCompatActivity() {
     private fun observeProfiles() {
         lifecycleScope.launch {
             repeatOnLifecycle(Lifecycle.State.STARTED) {
-                profileManager.allProfiles.collect { profiles -> rebuildChips(profiles) }
+                profileManager.allProfiles.collect { profiles ->
+                    sceneChipAdapter.submitProfiles(profiles, profileManager.activeProfile.value.id)
+                }
             }
         }
         lifecycleScope.launch {
             repeatOnLifecycle(Lifecycle.State.STARTED) {
                 profileManager.activeProfile.collect { profile ->
                     fusionStage.applyProfile(profile)
-                    syncChipSelection(profile.id)
+                    sceneChipAdapter.setActiveId(profile.id)
                 }
             }
         }
-    }
-
-    private fun rebuildChips(profiles: List<SoundProfile>) {
-        binding.sceneChipRow.removeAllViews()
-        sceneChips.clear()
-        val activeId = profileManager.activeProfile.value.id
-        for (profile in profiles) {
-            val chip = makeSceneChip(profile, profile.id == activeId)
-            binding.sceneChipRow.addView(chip)
-            sceneChips[profile.id] = chip
-            chip.setOnClickListener { profileManager.setActiveProfileId(profile.id) }
-            if (!profile.isPreset) {
-                chip.setOnLongClickListener { showDeleteProfileDialog(profile); true }
-            }
-        }
-        binding.sceneChipRow.addView(makeAddChip())
-    }
-
-    private fun syncChipSelection(activeId: String) {
-        for ((id, view) in sceneChips) styleChip(view, id == activeId)
-    }
-
-    private fun makeSceneChip(profile: SoundProfile, active: Boolean): View {
-        val container = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-            gravity = android.view.Gravity.CENTER_VERTICAL
-            setPadding(dp(16), dp(8), dp(16), dp(8))
-            layoutParams = LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.WRAP_CONTENT,
-                ViewGroup.LayoutParams.WRAP_CONTENT
-            ).apply { marginEnd = dp(8) }
-        }
-        val text = TextView(this).apply {
-            text = profile.name
-            textSize = 13f
-            typeface = android.graphics.Typeface.create("sans-serif-medium", android.graphics.Typeface.BOLD)
-            letterSpacing = 0f
-        }
-        container.addView(text)
-        styleChip(container, active)
-        return container
-    }
-
-    private fun styleChip(view: View, active: Boolean) {
-        view.background = ContextCompat.getDrawable(
-            this,
-            if (active) R.drawable.bg_chip_active else R.drawable.bg_chip_inactive
-        )
-        val color = if (active) ContextCompat.getColor(this, R.color.bg)
-                    else ContextCompat.getColor(this, R.color.muted)
-        if (view is LinearLayout) {
-            for (i in 0 until view.childCount) {
-                val child = view.getChildAt(i)
-                if (child is TextView) child.setTextColor(color)
-                if (child is ImageView) child.setColorFilter(color)
-            }
-        }
-    }
-
-    private fun makeAddChip(): View {
-        val container = FrameLayout(this).apply {
-            background = ContextCompat.getDrawable(this@MainActivity, R.drawable.bg_chip_add)
-            layoutParams = LinearLayout.LayoutParams(dp(36), dp(36))
-        }
-        val icon = ImageView(this).apply {
-            setImageResource(R.drawable.ic_plus)
-            layoutParams = FrameLayout.LayoutParams(dp(16), dp(16), android.view.Gravity.CENTER)
-        }
-        container.addView(icon)
-        container.setOnClickListener { showCreateProfileDialog() }
-        return container
-    }
-
-    private fun iconForProfile(name: String): Int {
-        val n = name.lowercase()
-        return when {
-            "home" in n -> R.drawable.ic_house
-            "office" in n || "work" in n -> R.drawable.ic_briefcase
-            else -> R.drawable.ic_building
-        }
-    }
-
-    private fun showCreateProfileDialog() {
-        val editText = EditText(this).apply { hint = "Profile name"; setSingleLine() }
-        val container = FrameLayout(this).apply {
-            val pad = dp(20)
-            setPadding(pad, pad / 2, pad, 0)
-            addView(editText)
-        }
-        AlertDialog.Builder(this)
-            .setTitle("New Profile")
-            .setView(container)
-            .setPositiveButton("Create") { _, _ ->
-                val name = editText.text.toString().trim()
-                if (name.isNotEmpty()) {
-                    val profile = profileManager.createProfile(name)
-                    profileManager.setActiveProfileId(profile.id)
-                }
-            }
-            .setNegativeButton("Cancel", null)
-            .show()
     }
 
     private fun showDeleteProfileDialog(profile: SoundProfile) {

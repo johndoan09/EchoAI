@@ -260,7 +260,7 @@ class RadarView @JvmOverloads constructor(
 
     companion object {
         private const val SWEEP_PERIOD_MS = 3000L
-        private const val PULSE_PERIOD_MS = 2500L
+        private const val PULSE_PERIOD_MS = 6000L
         private const val MAX_VISIBLE_EVENTS = 4
     }
 }

@@ -21,9 +21,13 @@ class PinnedAlertTracker {
 
     fun onEvents(events: List<SoundEvent>) {
         for (event in events) {
+            if (event.urgency.ordinalRank < Urgency.HIGH.ordinalRank) continue
             val key = event.label to event.urgency
-            if (key in pinned) continue
-            if (event.urgency.ordinalRank >= Urgency.HIGH.ordinalRank) {
+            val existing = pinned[key]
+            if (existing != null) {
+                // Banner already present — refresh timestamp so it moves to the top
+                pinned[key] = existing.copy(detectedAtMs = System.currentTimeMillis())
+            } else {
                 pinned[key] = PinnedAlert(
                     label = event.label,
                     urgency = event.urgency,

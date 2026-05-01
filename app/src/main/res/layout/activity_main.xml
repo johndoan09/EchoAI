@@ -56,19 +56,15 @@
     </LinearLayout>
 
     <!-- Scene chips -->
-    <HorizontalScrollView
+    <androidx.recyclerview.widget.RecyclerView
+        android:id="@+id/sceneChipRow"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
+        android:clipToPadding="false"
+        android:overScrollMode="never"
         android:paddingHorizontal="20dp"
         android:paddingBottom="10dp"
-        android:scrollbars="none">
-
-        <LinearLayout
-            android:id="@+id/sceneChipRow"
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:orientation="horizontal" />
-    </HorizontalScrollView>
+        android:scrollbars="none" />
 
     <!-- Radar (placeholder) -->
     <FrameLayout
