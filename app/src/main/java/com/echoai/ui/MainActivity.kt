@@ -122,9 +122,7 @@ class MainActivity : AppCompatActivity() {
     private fun onResetBelief() {
         if (!liveActive) return
         belief.reset()
-        // Push a flat snapshot to the radar immediately so the halo clears without
-        // waiting for the next window emit.
-        binding.radar.setBelief(belief.snapshot(), orientationProvider.yawDegrees() ?: 0f)
+        binding.radar.setBelief(belief.snapshot(), orientationProvider.yawDegrees() ?: 0f, 0f)
     }
 
     @SuppressLint("MissingPermission")
@@ -151,7 +149,7 @@ class MainActivity : AppCompatActivity() {
                     val frame = processWindow(window)
                     binding.results.text = frame.text
                     binding.radar.setEvents(frame.events)
-                    binding.radar.setBelief(frame.beliefSnapshot, frame.phoneYaw)
+                    binding.radar.setBelief(frame.beliefSnapshot, frame.phoneYaw, frame.beliefPeakAngle)
                 }
             }
         }
@@ -170,7 +168,7 @@ class MainActivity : AppCompatActivity() {
         binding.probeMics.isEnabled = true
         binding.sweepMatrix.isEnabled = true
         binding.radar.setEvents(emptyList())
-        binding.radar.setBelief(FloatArray(0), 0f)
+        binding.radar.setBelief(FloatArray(0), 0f, 0f)
         binding.resetBelief.isEnabled = false
         val err = captureManager.lastErrorMessage()
         binding.results.text = when {
@@ -185,6 +183,7 @@ class MainActivity : AppCompatActivity() {
         val events: List<SoundEvent>,
         val beliefSnapshot: FloatArray,
         val phoneYaw: Float,
+        val beliefPeakAngle: Float,
     )
 
     private suspend fun processWindow(window: AudioWindow): Frame = coroutineScope {
@@ -208,6 +207,8 @@ class MainActivity : AppCompatActivity() {
             belief.update(multi.full.bottomIld, yaw)
         }
 
+        val smoothedPeak = belief.smoothedPeakDegrees()
+
         diagnosticsLogger?.log(
             window = window,
             topLabel = classification.topK.firstOrNull(),
@@ -216,7 +217,7 @@ class MainActivity : AppCompatActivity() {
             azimuthIldDeg = azX,
             azimuthLagDeg = azLag,
             phoneYawDeg = yaw,
-            beliefPeakDeg = belief.argmaxDegrees(),
+            beliefPeakDeg = smoothedPeak,
             beliefIntensity = belief.maxBelief(),
         )
 
@@ -225,6 +226,7 @@ class MainActivity : AppCompatActivity() {
             events = events,
             beliefSnapshot = belief.snapshot(),
             phoneYaw = yaw ?: 0f,
+            beliefPeakAngle = smoothedPeak,
         )
     }
 
@@ -244,7 +246,7 @@ class MainActivity : AppCompatActivity() {
         appendLine("IMU / belief:")
         appendLine("  phone yaw  ${yawDegrees?.let { "%6.1f°".format(it) } ?: "    ?  "}  (world heading of TOP edge)")
         appendLine(
-            "  belief peak ${"%6.1f°".format(belief.argmaxDegrees())}  intensity=${"%.3f".format(belief.maxBelief())}  (uniform=${"%.3f".format(1f / 36)})"
+            "  belief raw  ${"%6.1f°".format(belief.argmaxDegrees())}  smooth ${"%6.1f°".format(belief.smoothedPeakDegrees())}  i=${"%.3f".format(belief.maxBelief())}"
         )
         appendLine()
 

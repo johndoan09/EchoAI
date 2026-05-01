@@ -37,6 +37,7 @@ class RadarView @JvmOverloads constructor(
     // device-frame: a fixed source stays anchored on the radar as the phone rotates.
     private var belief: FloatArray = FloatArray(0)
     private var phoneYawDegrees: Float = 0f
+    private var peakWorldAngle: Float = 0f
     private val beliefArcRect = android.graphics.RectF()
 
     private val ringPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
@@ -97,11 +98,15 @@ class RadarView @JvmOverloads constructor(
      * Update belief halo. [belief] is bin probabilities (length determines bin size in
      * degrees). [phoneYawDegrees] is the phone's current world-frame heading; passing it
      * lets the radar rotate world-frame angles into device frame so dots stay anchored
-     * to the world as the phone rotates.
+     * to the world as the phone rotates. [peakWorldAngle] is the smoothed peak direction
+     * (world-frame degrees) used for the peak marker dot — computed externally via
+     * [com.echoai.domain.BeliefDistribution.smoothedPeakDegrees] to avoid jumps from
+     * the cosine mirror ambiguity.
      */
-    fun setBelief(belief: FloatArray, phoneYawDegrees: Float) {
+    fun setBelief(belief: FloatArray, phoneYawDegrees: Float, peakWorldAngle: Float = 0f) {
         this.belief = belief
         this.phoneYawDegrees = phoneYawDegrees
+        this.peakWorldAngle = peakWorldAngle
         invalidate()
     }
 
@@ -155,9 +160,9 @@ class RadarView @JvmOverloads constructor(
 
     /**
      * Draw the belief halo: an arc segment per bin colored by belief intensity, plus a
-     * brighter peak marker at the argmax. Each bin's *world-frame* angle is rotated by
-     * `-phoneYawDegrees` so it lands at the correct *device-frame* position on the radar
-     * — i.e., as the phone rotates, the halo stays anchored to the world.
+     * brighter peak marker at the smoothed peak angle. Each bin's *world-frame* angle is
+     * rotated by `-phoneYawDegrees` so it lands at the correct *device-frame* position on
+     * the radar — i.e., as the phone rotates, the halo stays anchored to the world.
      */
     private fun drawBeliefHalo(canvas: android.graphics.Canvas, cx: Float, cy: Float, r: Float) {
         val n = belief.size
@@ -168,36 +173,28 @@ class RadarView @JvmOverloads constructor(
 
         // Find peak for normalized opacity scaling.
         var peakBelief = 0f
-        var peakIdx = 0
         for (i in belief.indices) {
-            if (belief[i] > peakBelief) { peakBelief = belief[i]; peakIdx = i }
+            if (belief[i] > peakBelief) peakBelief = belief[i]
         }
-        // Uniform belief is 1/n; only render bins meaningfully above that.
         val uniform = 1f / n
-        if (peakBelief <= uniform * 1.05f) return  // distribution is essentially flat — skip halo
+        if (peakBelief <= uniform * 1.05f) return
 
         for (i in belief.indices) {
             val b = belief[i]
             if (b <= uniform) continue
-            // Map (b - uniform) → opacity in [0, 1] using peak as ceiling.
             val intensity = ((b - uniform) / (peakBelief - uniform)).coerceIn(0f, 1f)
             if (intensity < 0.05f) continue
 
             val worldAngle = i * sweepDeg
-            // Convert world frame to device frame, then to canvas angle. Canvas drawArc
-            // measures from +X axis (right) clockwise; we want 0° at TOP of radar (up),
-            // 90° at RIGHT, etc. So canvasAngle = deviceAngle - 90°.
             val deviceAngle = worldAngle - phoneYawDegrees
             val canvasStart = deviceAngle - 90f - sweepDeg / 2f
 
-            // Color: warm orange/red, alpha tied to intensity.
             val alpha = (intensity * 220f).toInt().coerceIn(0, 255)
             beliefArcPaint.color = (alpha shl 24) or 0x00FFB347
             canvas.drawArc(beliefArcRect, canvasStart, sweepDeg, false, beliefArcPaint)
         }
 
-        // Peak marker: a small dot just inside the halo at the most-likely device angle.
-        val peakWorldAngle = peakIdx * sweepDeg
+        // Peak marker: smoothed world-frame angle, converted to device-frame for display.
         val peakDeviceAngle = peakWorldAngle - phoneYawDegrees
         val peakRad = Math.toRadians((peakDeviceAngle - 90f).toDouble())
         val px = cx + (haloRadius - 28f) * kotlin.math.cos(peakRad).toFloat()

@@ -94,11 +94,31 @@ class BeliefDistribution(
         return m
     }
 
+    /**
+     * Rate-limited angular EMA of [argmaxDegrees]. Moves at most [maxStepDeg] per call
+     * toward the current argmax, preventing the peak marker from jumping when the cosine
+     * mirror ambiguity causes the argmax to flip between two modes.
+     */
+    private var smoothedPeak: Float? = null
+
+    fun smoothedPeakDegrees(maxStepDeg: Float = 20f): Float {
+        val raw = argmaxDegrees()
+        val prev = smoothedPeak ?: run { smoothedPeak = raw; return raw }
+        var delta = raw - prev
+        if (delta > 180f) delta -= 360f
+        if (delta < -180f) delta += 360f
+        val step = delta.coerceIn(-maxStepDeg, maxStepDeg)
+        val next = ((prev + step) % 360f + 360f) % 360f
+        smoothedPeak = next
+        return next
+    }
+
     /** Defensive copy of the current belief, length [numBins]. Bin i covers angle i*[binDegrees]. */
     fun snapshot(): FloatArray = bins.copyOf()
 
     fun reset() {
         val uniform = 1f / numBins
         for (i in bins.indices) bins[i] = uniform
+        smoothedPeak = null
     }
 }
