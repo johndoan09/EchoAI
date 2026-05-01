@@ -3,6 +3,7 @@ package com.echoai.ui
 import android.animation.ValueAnimator
 import android.content.Context
 import android.graphics.Canvas
+import android.util.TypedValue
 import android.graphics.Color
 import android.graphics.Paint
 import android.graphics.Path
@@ -58,6 +59,9 @@ class RadarView @JvmOverloads constructor(
     private var phoneYawDegrees: Float = 0f
     private val beliefArcRect = RectF()
     private val arrowPath = Path()
+
+    private var density = context.resources.displayMetrics.density
+    private var scaledDensity = TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_SP, 1f, context.resources.displayMetrics)
 
     private val ringPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         style = Paint.Style.STROKE
@@ -198,6 +202,12 @@ class RadarView @JvmOverloads constructor(
         sweepAnimator.cancel()
         stopYawRefresh()
         super.onDetachedFromWindow()
+    }
+
+    override fun onConfigurationChanged(newConfig: android.content.res.Configuration) {
+        super.onConfigurationChanged(newConfig)
+        density = resources.displayMetrics.density
+        scaledDensity = TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_SP, 1f, resources.displayMetrics)
     }
 
     override fun onDraw(canvas: Canvas) {
@@ -389,8 +399,8 @@ class RadarView @JvmOverloads constructor(
         return d
     }
 
-    private fun dp(value: Float): Float = value * resources.displayMetrics.density
-    private fun sp(value: Float): Float = value * resources.displayMetrics.scaledDensity
+    private fun dp(value: Float): Float = value * density
+    private fun sp(value: Float): Float = value * scaledDensity
 
     companion object {
         fun urgencyColor(urgency: Urgency): Int = when (urgency) {

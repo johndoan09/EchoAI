@@ -18,6 +18,15 @@ class LocalizationStage(
     private val localizer: GccPhatLocalizer = GccPhatLocalizer(),
 ) {
 
+    private class BufSet(val n: Int) {
+        val bL = ShortArray(n); val bR = ShortArray(n)
+        val kL = ShortArray(n); val kR = ShortArray(n)
+        val bMono = ShortArray(n); val kMono = ShortArray(n)
+    }
+
+    private var fullBuf = BufSet(0)
+    private var subBuf = BufSet(0)
+
     fun localize(window: AudioWindow): LocalizationResult = localizeRange(
         window, startFrame = 0, frameCount = window.frameCount,
     )
@@ -55,21 +64,27 @@ class LocalizationStage(
     }
 
     private fun localizeRange(window: AudioWindow, startFrame: Int, frameCount: Int): LocalizationResult {
-        val bL = window.bottomLeft.copyOfRange(startFrame, startFrame + frameCount)
-        val bR = window.bottomRight.copyOfRange(startFrame, startFrame + frameCount)
-        val kL = window.backLeft.copyOfRange(startFrame, startFrame + frameCount)
-        val kR = window.backRight.copyOfRange(startFrame, startFrame + frameCount)
-
-        val bottomMono = mix(bL, bR)
-        val backMono = mix(kL, kR)
+        val buf = if (frameCount == window.frameCount) {
+            if (fullBuf.n != frameCount) fullBuf = BufSet(frameCount)
+            fullBuf
+        } else {
+            if (subBuf.n != frameCount) subBuf = BufSet(frameCount)
+            subBuf
+        }
+        System.arraycopy(window.bottomLeft, startFrame, buf.bL, 0, frameCount)
+        System.arraycopy(window.bottomRight, startFrame, buf.bR, 0, frameCount)
+        System.arraycopy(window.backLeft, startFrame, buf.kL, 0, frameCount)
+        System.arraycopy(window.backRight, startFrame, buf.kR, 0, frameCount)
+        mixInto(buf.bL, buf.bR, buf.bMono, frameCount)
+        mixInto(buf.kL, buf.kR, buf.kMono, frameCount)
 
         // Per-channel RMS (for ILD) and per-pair mono RMS (for front/back bias).
-        val bLRms = rms(bL)
-        val bRRms = rms(bR)
-        val kLRms = rms(kL)
-        val kRRms = rms(kR)
-        val bottomRms = rms(bottomMono)
-        val backRms = rms(backMono)
+        val bLRms = rms(buf.bL)
+        val bRRms = rms(buf.bR)
+        val kLRms = rms(buf.kL)
+        val kRRms = rms(buf.kR)
+        val bottomRms = rms(buf.bMono)
+        val backRms = rms(buf.kMono)
 
         val total = bottomRms + backRms
         val frontBackBias = if (total > 1e-6f) (bottomRms - backRms) / total else 0f
@@ -78,9 +93,9 @@ class LocalizationStage(
         val bottomIld = ildOf(bLRms, bRRms)
         val backIld = ildOf(kLRms, kRRms)
 
-        val crossPair = localizer.localize(bottomMono, backMono, MAX_LAG_CROSS).toLagSample()
-        val withinBottom = localizer.localize(bL, bR, MAX_LAG_WITHIN).toLagSample()
-        val withinBack = localizer.localize(kL, kR, MAX_LAG_WITHIN).toLagSample()
+        val crossPair = localizer.localize(buf.bMono, buf.kMono, MAX_LAG_CROSS).toLagSample()
+        val withinBottom = localizer.localize(buf.bL, buf.bR, MAX_LAG_WITHIN).toLagSample()
+        val withinBack = localizer.localize(buf.kL, buf.kR, MAX_LAG_WITHIN).toLagSample()
 
         return LocalizationResult(
             frameNumber = window.frameNumber,
@@ -107,13 +122,10 @@ class LocalizationStage(
         return if (sum > 1e-6f) (rRms - lRms) / sum else 0f
     }
 
-    private fun mix(l: ShortArray, r: ShortArray): ShortArray {
-        val n = minOf(l.size, r.size)
-        val out = ShortArray(n)
+    private fun mixInto(l: ShortArray, r: ShortArray, out: ShortArray, n: Int) {
         for (i in 0 until n) {
             out[i] = ((l[i].toInt() + r[i].toInt()) / 2).toShort()
         }
-        return out
     }
 
     private fun rms(s: ShortArray): Float {

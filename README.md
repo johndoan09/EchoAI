@@ -109,6 +109,35 @@ To stop monitoring entirely, tap "Pause Live" inside the app — this stops both
 
 ---
 
+## Tests
+
+The project ships 127 JVM unit tests covering all pure-Kotlin pipeline components. No device or emulator is needed.
+
+```sh
+# Run the full unit test suite
+./gradlew testDebugUnitTest
+
+# Expected output: BUILD SUCCESSFUL
+# HTML report: app/build/reports/tests/testDebugUnitTest/index.html
+```
+
+### What's covered
+
+| Test class | Component tested |
+|---|---|
+| `BeliefDistributionTest` | Bayesian belief math — uniform init, Gaussian-likelihood updates, decay, convergence to known world angle, rotational-aperture mirror resolution |
+| `GccPhatLocalizerTest` | Cross-correlation engine — zero lag on identical signals, correct lag sign on shifted signals, confidence bounds, silent/empty edge cases |
+| `LocalizationStageTest` | Full localization pipeline — ILD formula, front/back bias sign and magnitude, per-channel RMS, metadata passthrough, multi-scale energy picker |
+| `ClassificationStageTest` | YAMNet wrapper — 4-channel downmix, float normalization, padding/trimming to `inputSampleCount`, frame number passthrough |
+| `FusionStageTest` | End-to-end event lifecycle — event creation, temporal refresh, urgency sort, profile application (checkAll, priority filtering, CRITICAL auto-promotion) |
+| `YamnetConsolidationMapTest` | Noisy-OR consolidation math — single/empty groups, top-k limiting, compounding vs max-pool, output clamping, size validation |
+| `StubSoundClassifierTest` | Stub classifier branches — silence/ambient/loud thresholds, confidence ordering |
+| `UrgencyTest` | Urgency enum — ordinal ordering, tint alpha, color differentiation |
+| `DevicePositionTest` | Spatial conversion — ILD noise floor, degree mapping, lag confidence threshold, pair selection |
+| `EventTrackerTest` | Rolling event tracker — confidence threshold, stale eviction, refresh, substring matching, urgency overrides, multi-label independent tracking |
+
+---
+
 ## Architecture (brief)
 
 ```

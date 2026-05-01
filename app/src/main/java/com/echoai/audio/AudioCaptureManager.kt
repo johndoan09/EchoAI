@@ -135,6 +135,7 @@ class AudioCaptureManager(
             var backFramesWritten = 0L
             var nextWindowStartFrame = 0L
             var windowCounter = 0L
+            var consecutiveReadFailures = 0
 
             val readBuf1 = ShortArray(HOP_FRAMES * CHANNELS_PER_REC)
             val readBuf2 = ShortArray(HOP_FRAMES * CHANNELS_PER_REC)
@@ -143,8 +144,14 @@ class AudioCaptureManager(
                 val read1 = readFully(rec1, readBuf1)
                 val read2 = readFully(rec2, readBuf2)
                 if (read1 == 0 || read2 == 0) {
-                    error("AudioRecord.read returned 0 — capture interrupted")
+                    consecutiveReadFailures++
+                    if (consecutiveReadFailures >= MAX_CONSECUTIVE_READ_FAILURES) {
+                        error("AudioRecord.read stalled for $MAX_CONSECUTIVE_READ_FAILURES consecutive hops")
+                    }
+                    android.util.Log.w(TAG, "AudioRecord.read returned 0 (failure $consecutiveReadFailures/$MAX_CONSECUTIVE_READ_FAILURES), skipping hop")
+                    continue
                 }
+                consecutiveReadFailures = 0
                 val frames1 = read1 / CHANNELS_PER_REC
                 val frames2 = read2 / CHANNELS_PER_REC
 
@@ -278,5 +285,7 @@ class AudioCaptureManager(
         private const val CHANNELS_PER_REC = 2
         private const val AUDIO_SOURCE = MediaRecorder.AudioSource.CAMCORDER
         private const val RECORDER_BUFFER_BYTES = SAMPLE_RATE * CHANNELS_PER_REC * 2 * 2 // ~2 s
+        private const val MAX_CONSECUTIVE_READ_FAILURES = 5
+        private const val TAG = "AudioCaptureManager"
     }
 }

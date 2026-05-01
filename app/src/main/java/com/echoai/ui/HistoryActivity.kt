@@ -19,6 +19,7 @@ class HistoryActivity : AppCompatActivity() {
 
     private lateinit var binding: ActivityHistoryBinding
     private lateinit var historyManager: SoundHistoryManager
+    private lateinit var profileManager: ProfileManager
     private lateinit var adapter: HistoryAdapter
     private var highlightLabel: String? = null
 
@@ -30,6 +31,7 @@ class HistoryActivity : AppCompatActivity() {
         installSystemBarInsets()
 
         historyManager = SoundHistoryManager(applicationContext)
+        profileManager = ProfileManager(applicationContext)
         highlightLabel = intent.getStringExtra(EXTRA_HIGHLIGHT_LABEL)
 
         adapter = HistoryAdapter(
@@ -119,7 +121,7 @@ class HistoryActivity : AppCompatActivity() {
     }
 
     private fun openProfile() {
-        val activeProfileId = ProfileManager(applicationContext).activeProfile.value.id
+        val activeProfileId = profileManager.activeProfile.value.id
         startActivity(
             Intent(this, ProfileActivity::class.java).apply {
                 putExtra(ProfileActivity.EXTRA_PROFILE_ID, activeProfileId.ifBlank { SoundProfile.DEFAULT_ID })
