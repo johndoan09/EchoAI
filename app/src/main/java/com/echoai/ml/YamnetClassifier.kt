@@ -16,7 +16,14 @@ import java.nio.channels.FileChannel
  * Snapdragon devices); falls back to multi-threaded CPU on init failure.
  *
  * Input: 1D float waveform, [-1, 1], length [inputSampleCount] (15600 = 0.975 s @ 16 kHz).
- * Output: 521-class scores; we surface the top [topK] by confidence.
+ * Output: top [topK] [LabeledScore]s.
+ *
+ * If `assets/yamnet_consolidation_map.json` is present (default), the raw 521-class
+ * sigmoid output is consolidated via top-k noisy-OR (see [YamnetConsolidationMap])
+ * into the 42 application groups defined there before top-K selection. Each output
+ * stays an independent score in [0, 1]; ranking and downstream label matching use
+ * the group names. If the map fails to load the classifier silently falls back to
+ * raw 521-class output.
  *
  * Single-threaded use only — Interpreter is not thread-safe. The pipeline calls this
  * from one Dispatchers.Default coroutine per window, so no synchronization needed.
@@ -25,16 +32,25 @@ class YamnetClassifier private constructor(
     private val interpreter: Interpreter,
     private val labels: List<String>,
     override val inputSampleCount: Int,
-    private val outputClassCount: Int,
+    private val rawClassCount: Int,
     private val outputFramesCount: Int,
     private val topK: Int,
     private val delegateLabel: String,
+    private val consolidation: YamnetConsolidationMap?,
 ) : SoundClassifier {
 
     /** "NNAPI", "CPU", etc. — handy to surface in the UI. */
     val backend: String get() = delegateLabel
 
-    private val outputBuffer = Array(outputFramesCount) { FloatArray(outputClassCount) }
+    /** True when consolidation post-processing is active. */
+    val isConsolidated: Boolean get() = consolidation != null
+
+    /** Effective output class count after consolidation (or [rawClassCount] if disabled). */
+    val effectiveClassCount: Int get() = consolidation?.groupCount ?: rawClassCount
+
+    private val outputBuffer = Array(outputFramesCount) { FloatArray(rawClassCount) }
+    private val pooled = FloatArray(rawClassCount)
+    private val groupScores: FloatArray? = consolidation?.let { FloatArray(it.groupCount) }
 
     override fun classify(monoNormalized: FloatArray): List<LabeledScore> {
         require(monoNormalized.size == inputSampleCount) {
@@ -45,23 +61,35 @@ class YamnetClassifier private constructor(
         // overload as long as the underlying buffer is the right total size.
         interpreter.run(monoNormalized, outputBuffer)
 
-        // For multi-frame outputs, mean-pool over time before ranking.
-        val pooled = FloatArray(outputClassCount)
+        // Mean-pool over time frames to a single 521-vector of sigmoid scores.
         if (outputFramesCount == 1) {
-            System.arraycopy(outputBuffer[0], 0, pooled, 0, outputClassCount)
+            System.arraycopy(outputBuffer[0], 0, pooled, 0, rawClassCount)
         } else {
+            for (i in 0 until rawClassCount) pooled[i] = 0f
             for (frame in 0 until outputFramesCount) {
                 val row = outputBuffer[frame]
-                for (i in 0 until outputClassCount) pooled[i] += row[i]
+                for (i in 0 until rawClassCount) pooled[i] += row[i]
             }
             val invN = 1f / outputFramesCount
-            for (i in 0 until outputClassCount) pooled[i] *= invN
+            for (i in 0 until rawClassCount) pooled[i] *= invN
         }
 
-        // Top-K selection without sorting all 521 entries.
+        // Consolidate to group scores (max-pool, sigmoid-preserving) or use raw 521.
+        val scores: FloatArray
+        val n: Int
+        if (consolidation != null && groupScores != null) {
+            consolidation.consolidate(pooled, groupScores)
+            scores = groupScores
+            n = consolidation.groupCount
+        } else {
+            scores = pooled
+            n = rawClassCount
+        }
+
+        // Top-K selection without sorting all entries.
         val heap = ArrayList<IndexedScore>(topK + 1)
-        for (i in 0 until outputClassCount) {
-            val s = pooled[i]
+        for (i in 0 until n) {
+            val s = scores[i]
             if (heap.size < topK) {
                 heap += IndexedScore(i, s)
                 heap.sortBy { it.score }
@@ -88,14 +116,20 @@ class YamnetClassifier private constructor(
         private const val TAG = "YamnetClassifier"
 
         /**
-         * Build a classifier. Returns null only if the assets are missing — never throws.
-         * Delegate selection: NNAPI → CPU. Failures during NNAPI init log and fall back
-         * silently so the prototype keeps running.
+         * Build a classifier. Returns null only if the model assets are missing — never
+         * throws. Delegate selection: NNAPI → CPU. Failures during NNAPI init log and
+         * fall back silently so the prototype keeps running.
+         *
+         * If [useConsolidation] is true (default), the 42-group consolidation map is
+         * loaded from [consolidationMapAsset] and applied to the sigmoid output. If the
+         * map file is missing or malformed, falls back to raw 521-class output.
          */
         fun create(
             context: Context,
             modelAsset: String = "yamnet.tflite",
             classMapAsset: String = "yamnet_class_map.csv",
+            consolidationMapAsset: String = "yamnet_consolidation_map.json",
+            useConsolidation: Boolean = true,
             topK: Int = 5,
             preferNnapi: Boolean = true,
         ): YamnetClassifier? {
@@ -104,11 +138,16 @@ class YamnetClassifier private constructor(
             } catch (e: Exception) {
                 Log.e(TAG, "Failed to load $modelAsset", e); return null
             }
-            val labels = try {
+            val rawLabels = try {
                 loadClassMap(context, classMapAsset)
             } catch (e: Exception) {
                 Log.e(TAG, "Failed to load $classMapAsset", e); return null
             }
+
+            val consolidation = if (useConsolidation) {
+                YamnetConsolidationMap.load(context, consolidationMapAsset, rawLabels.size)
+            } else null
+            val effectiveLabels = consolidation?.groupNames ?: rawLabels
 
             // Try NNAPI first.
             if (preferNnapi) {
@@ -117,8 +156,14 @@ class YamnetClassifier private constructor(
                     val opts = Interpreter.Options().apply { addDelegate(delegate) }
                     val interp = Interpreter(modelBuffer, opts)
                     val (inLen, frames, classes) = readShapes(interp)
-                    Log.i(TAG, "YAMNet on NNAPI  input=$inLen out=[$frames,$classes]")
-                    return YamnetClassifier(interp, labels, inLen, classes, frames, topK, "NNAPI")
+                    Log.i(
+                        TAG,
+                        "YAMNet on NNAPI  input=$inLen out=[$frames,$classes]" +
+                            (consolidation?.let { "  consolidated → ${it.groupCount}" } ?: "  raw"),
+                    )
+                    return YamnetClassifier(
+                        interp, effectiveLabels, inLen, classes, frames, topK, "NNAPI", consolidation,
+                    )
                 }.onFailure { Log.w(TAG, "NNAPI delegate failed, falling back to CPU: ${it.message}") }
             }
 
@@ -127,8 +172,14 @@ class YamnetClassifier private constructor(
                 val opts = Interpreter.Options().apply { setNumThreads(2) }
                 val interp = Interpreter(modelBuffer, opts)
                 val (inLen, frames, classes) = readShapes(interp)
-                Log.i(TAG, "YAMNet on CPU  input=$inLen out=[$frames,$classes]")
-                YamnetClassifier(interp, labels, inLen, classes, frames, topK, "CPU")
+                Log.i(
+                    TAG,
+                    "YAMNet on CPU  input=$inLen out=[$frames,$classes]" +
+                        (consolidation?.let { "  consolidated → ${it.groupCount}" } ?: "  raw"),
+                )
+                YamnetClassifier(
+                    interp, effectiveLabels, inLen, classes, frames, topK, "CPU", consolidation,
+                )
             }.getOrElse {
                 Log.e(TAG, "Failed to construct CPU interpreter", it); null
             }
