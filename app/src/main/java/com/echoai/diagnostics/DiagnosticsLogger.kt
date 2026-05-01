@@ -88,13 +88,16 @@ class DiagnosticsLogger private constructor(
                 "cross_lag_250,cross_conf_250,bot_lag_250,bot_conf_250,bk_lag_250,bk_conf_250," +
                 "azimuth_ild_deg,azimuth_lag_deg,phone_yaw_deg,belief_peak_deg,belief_intensity"
 
-        fun start(context: Context): DiagnosticsLogger {
+        fun start(context: Context): DiagnosticsLogger? = try {
             val dir = context.getExternalFilesDir(null) ?: context.filesDir
             dir.mkdirs()
             val name = "diag_${SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(Date())}.csv"
             val file = File(dir, name)
             val writer = PrintWriter(FileWriter(file))
-            return DiagnosticsLogger(writer, file)
+            DiagnosticsLogger(writer, file)
+        } catch (e: Exception) {
+            android.util.Log.w("DiagnosticsLogger", "Could not open diagnostics file", e)
+            null
         }
     }
 }

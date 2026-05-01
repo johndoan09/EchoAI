@@ -59,7 +59,12 @@ class YamnetClassifier private constructor(
         // Many YAMNet variants accept a 1-D float array directly; some MediaPipe-wrapped
         // variants want a 2-D [1, N] tensor. Both succeed via the run(input, output)
         // overload as long as the underlying buffer is the right total size.
-        interpreter.run(monoNormalized, outputBuffer)
+        try {
+            interpreter.run(monoNormalized, outputBuffer)
+        } catch (e: Exception) {
+            Log.e(TAG, "Interpreter.run failed", e)
+            return emptyList()
+        }
 
         // Mean-pool over time frames to a single 521-vector of sigmoid scores.
         if (outputFramesCount == 1) {

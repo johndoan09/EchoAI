@@ -307,23 +307,25 @@ class MainActivity : AppCompatActivity() {
 
     override fun onStart() {
         super.onStart()
-        AppForegroundTracker.onActivityStarted()
     }
 
     override fun onPause() {
         super.onPause()
+        // Decrement before starting the passive service so urgent notifications
+        // fire immediately on background hand-off rather than being suppressed.
+        AppForegroundTracker.onActivityStopped()
         if (liveActive && isListeningSessionActive() && !requestingNotificationPermission) {
             handOffLiveToBackgroundMonitoring()
         }
     }
 
     override fun onStop() {
-        AppForegroundTracker.onActivityStopped()
         super.onStop()
     }
 
     override fun onResume() {
         super.onResume()
+        AppForegroundTracker.onActivityStarted()
         profileManager.refreshFromStorage()
         refreshPinnedSection(animate = false)
         if (isListeningSessionActive() && backgroundMonitoringFromLive) {

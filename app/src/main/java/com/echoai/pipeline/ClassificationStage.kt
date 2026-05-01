@@ -10,6 +10,10 @@ import com.echoai.ml.SoundClassifier
  */
 class ClassificationStage(private val classifier: SoundClassifier) {
 
+    fun close() {
+        (classifier as? com.echoai.ml.YamnetClassifier)?.close()
+    }
+
     fun classify(window: AudioWindow): ClassificationResult {
         val mono = downmix4(
             window.bottomLeft, window.bottomRight,

@@ -10,6 +10,7 @@ import android.app.Service
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.content.pm.ServiceInfo
 import android.os.Build
 import android.os.IBinder
 import android.util.Log
@@ -58,9 +59,10 @@ class PassiveMonitoringService : Service() {
         AudioCaptureManager(applicationContext, NullWorldOrientation)
     }
     private val urgencyClassifier by lazy { UrgencyClassifier(applicationContext) }
-    private val classificationStage by lazy {
+    private val classificationStageLazy = lazy {
         ClassificationStage(YamnetClassifier.create(applicationContext) ?: StubSoundClassifier())
     }
+    private val classificationStage by classificationStageLazy
     private val profileManager by lazy { ProfileManager(applicationContext) }
     private val hapticManager by lazy { HapticManager(applicationContext) }
     private val pinnedAlertTracker by lazy { PinnedAlertTracker(applicationContext) }
@@ -72,13 +74,16 @@ class PassiveMonitoringService : Service() {
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        if (intent?.action == ACTION_STOP) {
-            stopSelf()
-            return START_NOT_STICKY
-        }
-
         val foregroundStarted = runCatching {
-            startForeground(NOTIFICATION_ID_MONITORING, monitoringNotification())
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                startForeground(
+                    NOTIFICATION_ID_MONITORING,
+                    monitoringNotification(),
+                    ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE,
+                )
+            } else {
+                startForeground(NOTIFICATION_ID_MONITORING, monitoringNotification())
+            }
             true
         }.getOrElse {
             Log.w(TAG, "Unable to promote background listening service", it)
@@ -100,6 +105,7 @@ class PassiveMonitoringService : Service() {
         captureManager.stop()
         monitorJob?.cancel()
         scope.cancel()
+        if (classificationStageLazy.isInitialized()) classificationStage.close()
         super.onDestroy()
     }
 
@@ -271,7 +277,6 @@ class PassiveMonitoringService : Service() {
         getSystemService(NotificationManager::class.java)
 
     companion object {
-        private const val ACTION_STOP = "com.echoai.service.PassiveMonitoringService.STOP"
         private const val CHANNEL_MONITORING = "passive_monitoring"
         private const val CHANNEL_ALERTS = "passive_alerts"
         private const val NOTIFICATION_ID_MONITORING = 1001

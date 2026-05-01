@@ -50,8 +50,8 @@ class SoundHistoryManager(context: Context) {
         val entries = loadRaw()
         val kept = JSONArray()
         for (i in 0 until entries.length()) {
-            val obj = entries.getJSONObject(i)
-            if (obj.getLong(KEY_TIMESTAMP) == timestampMs && obj.getString(KEY_LABEL) == label) continue
+            val obj = entries.optJSONObject(i) ?: continue
+            if (obj.optLong(KEY_TIMESTAMP) == timestampMs && obj.optString(KEY_LABEL) == label) continue
             kept.put(obj)
         }
         save(kept)
@@ -66,13 +66,14 @@ class SoundHistoryManager(context: Context) {
         save(entries)
         val result = mutableListOf<HistoryEntry>()
         for (i in 0 until entries.length()) {
-            val obj = entries.getJSONObject(i)
+            val obj = entries.optJSONObject(i) ?: continue
+            val label = obj.optString(KEY_LABEL).takeIf { it.isNotBlank() } ?: continue
             result += HistoryEntry(
-                label = obj.getString(KEY_LABEL),
-                urgency = Urgency.entries.firstOrNull { it.name == obj.getString(KEY_URGENCY) }
+                label = label,
+                urgency = Urgency.entries.firstOrNull { it.name == obj.optString(KEY_URGENCY) }
                     ?: Urgency.LOW,
-                profileName = obj.getString(KEY_PROFILE),
-                timestampMs = obj.getLong(KEY_TIMESTAMP),
+                profileName = obj.optString(KEY_PROFILE),
+                timestampMs = obj.optLong(KEY_TIMESTAMP),
             )
         }
         return result.sortedByDescending { it.timestampMs }
@@ -93,8 +94,8 @@ class SoundHistoryManager(context: Context) {
         val cutoff = now - RETENTION_MS
         val pruned = JSONArray()
         for (i in 0 until entries.length()) {
-            val obj = entries.getJSONObject(i)
-            if (obj.getLong(KEY_TIMESTAMP) >= cutoff) pruned.put(obj)
+            val obj = entries.optJSONObject(i) ?: continue
+            if (obj.optLong(KEY_TIMESTAMP) >= cutoff) pruned.put(obj)
         }
         return pruned
     }

@@ -118,7 +118,7 @@ class RadarView @JvmOverloads constructor(
                 phoneYawDegrees = newYaw
                 invalidate()
             }
-            scheduleYawRefresh()
+            if (isAttachedToWindow) scheduleYawRefresh()
         }
     }
 
