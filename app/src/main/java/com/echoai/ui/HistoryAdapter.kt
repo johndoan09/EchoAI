@@ -59,7 +59,14 @@ class HistoryAdapter(
         b.urgencyBadge.text = u.name
         b.urgencyBadge.setTextColor(u.textColor)
 
-        b.profileText.text = entry.profileName
+        b.profileText.text = if (
+            entry.profileName == ctx.getString(R.string.passive_monitoring_profile) ||
+            entry.profileName == LEGACY_BACKGROUND_PROFILE
+        ) {
+            ctx.getString(R.string.passive_monitoring_profile)
+        } else {
+            entry.profileName
+        }
         b.timeText.text = formatTime(entry.timestampMs)
 
         b.dismissButton.setOnClickListener { onDismiss(entry) }
@@ -68,9 +75,8 @@ class HistoryAdapter(
     private fun formatTime(timestampMs: Long): CharSequence {
         val elapsed = System.currentTimeMillis() - timestampMs
         return if (elapsed < DateUtils.HOUR_IN_MILLIS) {
-            DateUtils.getRelativeTimeSpanString(
-                timestampMs, System.currentTimeMillis(), DateUtils.MINUTE_IN_MILLIS
-            )
+            val minutes = (elapsed / DateUtils.MINUTE_IN_MILLIS).coerceAtLeast(1)
+            "$minutes min ago"
         } else {
             timeFmt.format(Date(timestampMs))
         }
@@ -80,6 +86,8 @@ class HistoryAdapter(
         (rgb and 0x00FFFFFF) or ((alpha and 0xFF) shl 24)
 
     companion object {
+        private const val LEGACY_BACKGROUND_PROFILE = "Background Listening"
+
         private val DIFF = object : DiffUtil.ItemCallback<HistoryEntry>() {
             override fun areItemsTheSame(old: HistoryEntry, new: HistoryEntry) =
                 old.timestampMs == new.timestampMs && old.label == new.label

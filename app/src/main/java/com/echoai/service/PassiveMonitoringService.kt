@@ -17,8 +17,10 @@ import androidx.core.app.NotificationCompat
 import androidx.core.content.ContextCompat
 import com.echoai.R
 import com.echoai.audio.AudioCaptureManager
+import com.echoai.audio.AudioWindow
 import com.echoai.domain.ClassificationResult
-import com.echoai.domain.EventTracker
+import com.echoai.domain.DevicePosition
+import com.echoai.domain.LagSample
 import com.echoai.domain.PinnedAlertTracker
 import com.echoai.domain.ProfileManager
 import com.echoai.domain.SoundEvent
@@ -28,8 +30,6 @@ import com.echoai.domain.UrgencyClassifier
 import com.echoai.ml.StubSoundClassifier
 import com.echoai.ml.YamnetClassifier
 import com.echoai.pipeline.ClassificationStage
-import com.echoai.pipeline.FusionStage
-import com.echoai.pipeline.LocalizationStage
 import com.echoai.sensor.NullWorldOrientation
 import com.echoai.ui.MainActivity
 import com.echoai.util.AppForegroundTracker
@@ -42,7 +42,6 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.withContext
 
 /**
  * Android-compliant passive microphone monitor. Runs only as a foreground service, so
@@ -62,12 +61,7 @@ class PassiveMonitoringService : Service() {
     private val classificationStage by lazy {
         ClassificationStage(YamnetClassifier.create(applicationContext) ?: StubSoundClassifier())
     }
-    private val localizationStage by lazy { LocalizationStage() }
-    private val fusionStage by lazy {
-        FusionStage(EventTracker(urgencyClassifier = urgencyClassifier)).apply {
-            applyProfile(ProfileManager(applicationContext).activeProfile.value)
-        }
-    }
+    private val profileManager by lazy { ProfileManager(applicationContext) }
     private val hapticManager by lazy { HapticManager(applicationContext) }
     private val pinnedAlertTracker by lazy { PinnedAlertTracker(applicationContext) }
     private val historyManager by lazy { SoundHistoryManager(applicationContext) }
@@ -83,8 +77,22 @@ class PassiveMonitoringService : Service() {
             return START_NOT_STICKY
         }
 
-        startForeground(NOTIFICATION_ID_MONITORING, monitoringNotification())
-        startMonitoring()
+        val foregroundStarted = runCatching {
+            startForeground(NOTIFICATION_ID_MONITORING, monitoringNotification())
+            true
+        }.getOrElse {
+            Log.w(TAG, "Unable to promote background listening service", it)
+            stopSelf()
+            false
+        }
+        if (!foregroundStarted) return START_NOT_STICKY
+
+        runCatching {
+            startMonitoring()
+        }.onFailure {
+            Log.w(TAG, "Unable to start background microphone monitoring", it)
+            stopSelf()
+        }
         return START_STICKY
     }
 
@@ -107,7 +115,13 @@ class PassiveMonitoringService : Service() {
             return
         }
 
-        captureManager.start(scope)
+        runCatching {
+            captureManager.start(scope)
+        }.onFailure {
+            Log.w(TAG, "Unable to open background microphone capture", it)
+            stopSelf()
+            return
+        }
         monitorJob = scope.launch {
             try {
                 captureManager.windows.collectLatest { window ->
@@ -120,18 +134,58 @@ class PassiveMonitoringService : Service() {
                     } else {
                         lastClassification ?: ClassificationResult(window.frameNumber, emptyList())
                     }
-                    val localization = localizationStage.localizeMultiScale(window)
-                    val events = withContext(Dispatchers.Default) {
-                        fusionStage.process(classification, localization.full)
-                    }
+                    val events = urgentEventsFromClassification(classification, window)
                     handleEvents(events)
                 }
             } catch (e: CancellationException) {
                 throw e
-            } catch (_: Exception) {
+            } catch (e: Exception) {
+                Log.w(TAG, "Background monitoring stopped after pipeline failure", e)
                 stopSelf()
             }
         }
+    }
+
+    private fun urgentEventsFromClassification(
+        classification: ClassificationResult,
+        window: AudioWindow,
+    ): List<SoundEvent> {
+        val now = window.captureTimestampNanos
+        val neutralPosition = DevicePosition(
+            frontBackBias = 0f,
+            bottomIld = 0f,
+            backIld = 0f,
+            crossPairLag = LagSample(samples = 0, confidence = 0f),
+            withinPairBottom = LagSample(samples = 0, confidence = 0f),
+            withinPairBack = LagSample(samples = 0, confidence = 0f),
+            sampleRate = window.sampleRate,
+        )
+
+        return classification.topK.mapNotNull { score ->
+            if (score.confidence < URGENT_CONFIDENCE_THRESHOLD) return@mapNotNull null
+            val urgency = resolveUrgency(score.label)
+            if (urgency.ordinalRank < Urgency.HIGH.ordinalRank) return@mapNotNull null
+
+            SoundEvent(
+                label = score.label,
+                confidence = score.confidence,
+                urgency = urgency,
+                firstSeenTimestampNanos = now,
+                lastSeenTimestampNanos = now,
+                devicePosition = neutralPosition,
+                worldOrientation = null,
+                isPrioritized = true,
+            )
+        }
+    }
+
+    private fun resolveUrgency(label: String): Urgency {
+        val overrides = profileManager.activeProfile.value.urgencyOverrides
+        return overrides[label]
+            ?: overrides.entries.firstOrNull {
+                label.contains(it.key, ignoreCase = true) || it.key.contains(label, ignoreCase = true)
+            }?.value
+            ?: urgencyClassifier.classify(label)
     }
 
     private fun handleEvents(events: List<SoundEvent>) {
@@ -223,6 +277,7 @@ class PassiveMonitoringService : Service() {
         private const val NOTIFICATION_ID_MONITORING = 1001
         private const val NOTIFICATION_ID_ALERT = 1002
         private const val CLASSIFY_EVERY_N = 4
+        private const val URGENT_CONFIDENCE_THRESHOLD = 0.20f
 
         fun start(context: Context): Boolean {
             val intent = Intent(context, PassiveMonitoringService::class.java)
