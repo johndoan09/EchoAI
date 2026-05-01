@@ -1,5 +1,6 @@
 package com.echoai.ui
 
+import android.content.Intent
 import android.os.Bundle
 import android.view.View
 import androidx.appcompat.app.AppCompatActivity
@@ -9,6 +10,8 @@ import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.updatePadding
 import androidx.recyclerview.widget.LinearLayoutManager
 import com.echoai.databinding.ActivityHistoryBinding
+import com.echoai.domain.ProfileManager
+import com.echoai.domain.SoundProfile
 import com.echoai.domain.SoundHistoryManager
 
 class HistoryActivity : AppCompatActivity() {
@@ -41,6 +44,8 @@ class HistoryActivity : AppCompatActivity() {
             historyManager.clearAll()
             loadHistory()
         }
+        binding.tabListening.setOnClickListener { openListening() }
+        binding.tabProfile.setOnClickListener { openProfile() }
         binding.historyList.layoutManager = LinearLayoutManager(this)
         binding.historyList.adapter = adapter
 
@@ -51,7 +56,7 @@ class HistoryActivity : AppCompatActivity() {
         val rootStartLeft = binding.root.paddingLeft
         val rootStartTop = binding.root.paddingTop
         val rootStartRight = binding.root.paddingRight
-        val rootStartBottom = binding.root.paddingBottom
+        val tabStartBottom = binding.bottomTabBar.paddingBottom
 
         ViewCompat.setOnApplyWindowInsetsListener(binding.root) { view, insets ->
             val systemBars = insets.getInsets(WindowInsetsCompat.Type.systemBars())
@@ -59,7 +64,9 @@ class HistoryActivity : AppCompatActivity() {
                 left = rootStartLeft + systemBars.left,
                 top = rootStartTop + systemBars.top,
                 right = rootStartRight + systemBars.right,
-                bottom = rootStartBottom + systemBars.bottom,
+            )
+            binding.bottomTabBar.updatePadding(
+                bottom = tabStartBottom + systemBars.bottom
             )
             insets
         }
@@ -84,6 +91,23 @@ class HistoryActivity : AppCompatActivity() {
             if (index >= 0) binding.historyList.scrollToPosition(index)
             highlightLabel = null
         }
+    }
+
+    private fun openListening() {
+        startActivity(
+            Intent(this, MainActivity::class.java)
+                .addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP)
+        )
+        finish()
+    }
+
+    private fun openProfile() {
+        val activeProfileId = ProfileManager(applicationContext).activeProfile.value.id
+        startActivity(
+            Intent(this, ProfileActivity::class.java).apply {
+                putExtra(ProfileActivity.EXTRA_PROFILE_ID, activeProfileId.ifBlank { SoundProfile.DEFAULT_ID })
+            }
+        )
     }
 
     companion object {

@@ -200,4 +200,83 @@
         </LinearLayout>
     </LinearLayout>
 
+    <!-- Bottom tab bar -->
+    <View
+        android:layout_width="match_parent"
+        android:layout_height="1dp"
+        android:background="@color/borderMed" />
+
+    <LinearLayout
+        android:id="@+id/bottomTabBar"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:background="@color/tabBar"
+        android:orientation="horizontal"
+        android:paddingTop="6dp"
+        android:paddingBottom="6dp">
+
+        <LinearLayout
+            android:id="@+id/tabListening"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:background="?attr/selectableItemBackground"
+            android:clickable="true"
+            android:focusable="true"
+            android:gravity="center"
+            android:orientation="vertical"
+            android:paddingVertical="6dp">
+
+            <ImageView
+                android:id="@+id/tabListeningIcon"
+                android:layout_width="22dp"
+                android:layout_height="22dp"
+                android:contentDescription="@null"
+                android:src="@drawable/ic_headphones"
+                app:tint="@color/muted" />
+
+            <TextView
+                android:id="@+id/tabListeningLabel"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="4dp"
+                android:fontFamily="sans-serif-medium"
+                android:text="@string/tab_listening"
+                android:textColor="@color/muted"
+                android:textSize="11sp" />
+        </LinearLayout>
+
+        <LinearLayout
+            android:id="@+id/tabProfile"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:background="?attr/selectableItemBackground"
+            android:clickable="true"
+            android:focusable="true"
+            android:gravity="center"
+            android:orientation="vertical"
+            android:paddingVertical="6dp">
+
+            <ImageView
+                android:id="@+id/tabProfileIcon"
+                android:layout_width="22dp"
+                android:layout_height="22dp"
+                android:contentDescription="@null"
+                android:src="@drawable/ic_people"
+                app:tint="@color/accent" />
+
+            <TextView
+                android:id="@+id/tabProfileLabel"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="4dp"
+                android:fontFamily="sans-serif-medium"
+                android:text="@string/tab_scene_profile"
+                android:textColor="@color/accent"
+                android:textSize="11sp"
+                android:textStyle="bold" />
+        </LinearLayout>
+    </LinearLayout>
+
 </LinearLayout>

@@ -1,6 +1,7 @@
 package com.echoai.ui
 
 import android.app.AlertDialog
+import android.content.Intent
 import android.os.Bundle
 import android.text.Editable
 import android.text.TextWatcher
@@ -51,6 +52,8 @@ class ProfileActivity : AppCompatActivity() {
         binding.backButton.setOnClickListener {
             onBackPressedDispatcher.onBackPressed()
         }
+        binding.tabListening.setOnClickListener { navigateToListening() }
+        binding.tabProfile.setOnClickListener { /* already here */ }
 
         adapter = SoundLabelAdapter(
             urgencyClassifier = urgencyClassifier,
@@ -129,7 +132,7 @@ class ProfileActivity : AppCompatActivity() {
         val rootStartLeft = binding.root.paddingLeft
         val rootStartTop = binding.root.paddingTop
         val rootStartRight = binding.root.paddingRight
-        val rootStartBottom = binding.root.paddingBottom
+        val tabStartBottom = binding.bottomTabBar.paddingBottom
 
         ViewCompat.setOnApplyWindowInsetsListener(binding.root) { view, insets ->
             val systemBars = insets.getInsets(WindowInsetsCompat.Type.systemBars())
@@ -137,11 +140,34 @@ class ProfileActivity : AppCompatActivity() {
                 left = rootStartLeft + systemBars.left,
                 top = rootStartTop + systemBars.top,
                 right = rootStartRight + systemBars.right,
-                bottom = rootStartBottom + systemBars.bottom,
+            )
+            binding.bottomTabBar.updatePadding(
+                bottom = tabStartBottom + systemBars.bottom
             )
             insets
         }
         ViewCompat.requestApplyInsets(binding.root)
+    }
+
+    private fun navigateToListening() {
+        if (pendingLabels != savedLabels) {
+            AlertDialog.Builder(this)
+                .setTitle(getString(R.string.unsaved_changes_title))
+                .setMessage(getString(R.string.unsaved_changes_message))
+                .setPositiveButton(getString(R.string.discard_changes)) { _, _ -> openListening() }
+                .setNegativeButton(getString(R.string.keep_editing), null)
+                .show()
+        } else {
+            openListening()
+        }
+    }
+
+    private fun openListening() {
+        startActivity(
+            Intent(this, MainActivity::class.java)
+                .addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP)
+        )
+        finish()
     }
 
     private fun updateSaveBar() {

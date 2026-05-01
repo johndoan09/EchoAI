@@ -75,7 +75,7 @@ class MainActivity : AppCompatActivity() {
     }
     private val profileManager by lazy { ProfileManager(applicationContext) }
     private val historyManager by lazy { SoundHistoryManager(applicationContext) }
-    private val pinnedAlertTracker = PinnedAlertTracker()
+    private val pinnedAlertTracker by lazy { PinnedAlertTracker(applicationContext) }
 
     private var pipelineJob: Job? = null
     private var liveActive = false
@@ -127,6 +127,7 @@ class MainActivity : AppCompatActivity() {
 
         // No alerts on launch — start with the expanded button state immediately (no animation)
         applyLiveToggleState(expanded = true, animate = false)
+        refreshPinnedSection(animate = false)
 
         observeProfiles()
     }
@@ -245,14 +246,14 @@ class MainActivity : AppCompatActivity() {
 
     // --- Pinned alerts ---
 
-    private fun refreshPinnedSection() {
+    private fun refreshPinnedSection(animate: Boolean = true) {
         val alerts = pinnedAlertTracker.snapshot()
         pinnedAdapter.submitList(alerts)
         val nowVisible = alerts.isNotEmpty()
         binding.pinnedAlertsSection.visibility = if (nowVisible) View.VISIBLE else View.GONE
         if (nowVisible != pinnedSectionVisible) {
             pinnedSectionVisible = nowVisible
-            applyLiveToggleState(expanded = !nowVisible, animate = true)
+            applyLiveToggleState(expanded = !nowVisible, animate = animate)
         }
     }
 
