@@ -18,31 +18,32 @@
         android:paddingTop="12dp"
         android:paddingBottom="8dp">
 
-        <FrameLayout
-            android:layout_width="34dp"
-            android:layout_height="34dp"
-            android:background="@drawable/bg_logo_tile">
-
-            <ImageView
-                android:layout_width="18dp"
-                android:layout_height="18dp"
-                android:layout_gravity="center"
-                android:contentDescription="@null"
-                android:src="@drawable/ic_headphones" />
-        </FrameLayout>
-
-        <TextView
-            android:id="@+id/wordmark"
+        <LinearLayout
             android:layout_width="0dp"
             android:layout_height="wrap_content"
-            android:layout_marginStart="10dp"
             android:layout_weight="1"
-            android:fontFamily="sans-serif-black"
-            android:letterSpacing="-0.03"
-            android:textColor="@color/text"
-            android:textSize="20sp"
-            android:textStyle="bold"
-            tools:text="echoAI" />
+            android:gravity="center_vertical"
+            android:orientation="horizontal">
+
+            <ImageView
+                android:layout_width="24dp"
+                android:layout_height="24dp"
+                android:contentDescription="@null"
+                android:src="@drawable/ic_headphones"
+                app:tint="@color/accent" />
+
+            <TextView
+                android:id="@+id/wordmark"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginStart="8dp"
+                android:fontFamily="sans-serif-black"
+                android:letterSpacing="-0.03"
+                android:textColor="@color/text"
+                android:textSize="20sp"
+                android:textStyle="bold"
+                tools:text="echoAI" />
+        </LinearLayout>
 
         <ImageButton
             android:id="@+id/historyButton"
@@ -79,33 +80,32 @@
             android:layout_height="match_parent" />
     </FrameLayout>
 
-    <!-- IMU rotate hint: shown when audio is active but the phone is held still. -->
-    <TextView
-        android:id="@+id/rotateHint"
-        android:layout_width="wrap_content"
-        android:layout_height="wrap_content"
-        android:layout_gravity="center_horizontal"
-        android:layout_marginTop="2dp"
-        android:layout_marginBottom="4dp"
-        android:background="@drawable/bg_pinned_banner"
-        android:fontFamily="sans-serif-medium"
-        android:paddingHorizontal="12dp"
-        android:paddingVertical="6dp"
-        android:text="@string/rotate_hint"
-        android:textColor="@color/accent"
-        android:textSize="11sp"
-        android:visibility="gone"
-        tools:visibility="visible" />
-
     <!-- Floating Start/Listening pill button -->
     <LinearLayout
         android:id="@+id/liveToggleContainer"
         android:layout_width="match_parent"
-        android:layout_height="wrap_content"
+        android:layout_height="124dp"
         android:gravity="center"
+        android:orientation="vertical"
         android:paddingHorizontal="16dp"
         android:paddingTop="2dp"
         android:paddingBottom="2dp">
+
+        <!-- IMU rotate hint: shown when audio is active but the phone is held still. -->
+        <TextView
+            android:id="@+id/rotateHint"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginBottom="4dp"
+            android:background="@drawable/bg_pinned_banner"
+            android:fontFamily="sans-serif-medium"
+            android:paddingHorizontal="12dp"
+            android:paddingVertical="6dp"
+            android:text="@string/rotate_hint"
+            android:textColor="@color/accent"
+            android:textSize="11sp"
+            android:visibility="gone"
+            tools:visibility="visible" />
 
         <androidx.appcompat.widget.AppCompatButton
             android:id="@+id/liveToggle"
@@ -118,13 +118,13 @@
             android:fontFamily="sans-serif-medium"
             android:letterSpacing="-0.01"
             android:minHeight="0dp"
-            android:paddingHorizontal="24dp"
-            android:paddingVertical="12dp"
+            android:paddingHorizontal="18dp"
+            android:paddingVertical="8dp"
             android:stateListAnimator="@null"
             android:text="@string/start_live"
             android:textAllCaps="false"
             android:textColor="@color/white"
-            android:textSize="15sp"
+            android:textSize="14sp"
             android:textStyle="bold" />
     </LinearLayout>
 
@@ -187,13 +187,31 @@
                 android:textStyle="bold" />
         </LinearLayout>
 
-        <androidx.recyclerview.widget.RecyclerView
-            android:id="@+id/pinnedAlertsList"
+        <FrameLayout
             android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:maxHeight="280dp"
-            android:nestedScrollingEnabled="true"
-            android:overScrollMode="never" />
+            android:layout_height="wrap_content">
+
+            <androidx.recyclerview.widget.RecyclerView
+                android:id="@+id/pinnedAlertsList"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:fadeScrollbars="false"
+                android:nestedScrollingEnabled="true"
+                android:overScrollMode="never"
+                android:paddingEnd="8dp"
+                android:scrollbarSize="3dp"
+                android:scrollbars="vertical" />
+
+            <View
+                android:id="@+id/pinnedAlertsScrollIndicator"
+                android:layout_width="4dp"
+                android:layout_height="42dp"
+                android:layout_gravity="end|top"
+                android:layout_marginEnd="2dp"
+                android:background="@drawable/bg_pinned_scroll_indicator"
+                android:visibility="gone"
+                tools:visibility="visible" />
+        </FrameLayout>
     </LinearLayout>
 
     <!-- Bottom tab bar -->
@@ -209,7 +227,7 @@
         android:background="@color/tabBar"
         android:orientation="horizontal"
         android:paddingTop="6dp"
-        android:paddingBottom="6dp">
+        android:paddingBottom="12dp">
 
         <LinearLayout
             android:id="@+id/tabListening"
@@ -274,5 +292,11 @@
                 android:textSize="11sp" />
         </LinearLayout>
     </LinearLayout>
+
+    <View
+        android:id="@+id/systemNavBarBackground"
+        android:layout_width="match_parent"
+        android:layout_height="0dp"
+        android:background="@color/systemNavBar" />
 
 </LinearLayout>

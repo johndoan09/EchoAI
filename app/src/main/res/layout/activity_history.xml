@@ -111,7 +111,7 @@
         android:background="@color/tabBar"
         android:orientation="horizontal"
         android:paddingTop="6dp"
-        android:paddingBottom="6dp">
+        android:paddingBottom="12dp">
 
         <LinearLayout
             android:id="@+id/tabListening"
@@ -176,5 +176,11 @@
                 android:textSize="11sp" />
         </LinearLayout>
     </LinearLayout>
+
+    <View
+        android:id="@+id/systemNavBarBackground"
+        android:layout_width="match_parent"
+        android:layout_height="0dp"
+        android:background="@color/systemNavBar" />
 
 </LinearLayout>

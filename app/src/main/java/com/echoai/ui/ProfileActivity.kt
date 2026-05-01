@@ -80,9 +80,14 @@ class ProfileActivity : AppCompatActivity() {
             override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) {}
             override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) {}
             override fun afterTextChanged(s: Editable?) {
-                adapter.filter(s?.toString().orEmpty())
+                val query = s?.toString().orEmpty()
+                adapter.filter(query)
+                binding.searchClearButton.visibility = if (query.isBlank()) View.GONE else View.VISIBLE
             }
         })
+        binding.searchClearButton.setOnClickListener {
+            binding.searchInput.text?.clear()
+        }
 
         binding.checkAllButton.setOnClickListener {
             pendingLabels.clear()
@@ -163,9 +168,15 @@ class ProfileActivity : AppCompatActivity() {
                 top = rootStartTop + systemBars.top,
                 right = rootStartRight + systemBars.right,
             )
+            val navSafeHeight = (systemBars.bottom * 3) / 4
+            val grayHeight = systemBars.bottom / 4
             binding.bottomTabBar.updatePadding(
-                bottom = tabStartBottom + ((systemBars.bottom * 3) / 4)
+                bottom = tabStartBottom + (navSafeHeight - grayHeight).coerceAtLeast(0)
             )
+            binding.systemNavBarBackground.layoutParams =
+                binding.systemNavBarBackground.layoutParams.apply {
+                    height = grayHeight
+                }
             insets
         }
         ViewCompat.requestApplyInsets(binding.root)
