@@ -6,8 +6,8 @@ package com.echoai.domain
  * Drops events that haven't been refreshed within `staleAfterNanos`.
  *
  * Profile-driven behaviour:
- * - [priorityLabels]: lower the confidence threshold to PRIORITY_CONFIDENCE_THRESHOLD and
- *   mark events `isPrioritized = true` so the UI/haptics can boost them.
+ * - [priorityLabels]: selected labels from the active profile. Only selected labels are
+ *   surfaced, using a lower confidence threshold.
  * - [urgencyOverrides]: per-label urgency chosen by the user in their profile, taking
  *   precedence over the base urgency_map.json lookup.
  *
@@ -67,9 +67,7 @@ class EventTracker(
     }
 
     /**
-     * Returns active events sorted by effective rank (CRITICAL first), then recency.
-     * Prioritized events are boosted to at least HIGH rank, surfacing above non-prioritized
-     * LOW/MEDIUM sounds regardless of base urgency.
+     * Returns active events sorted by resolved urgency (CRITICAL first), then recency.
      */
     fun snapshot(asOfNanos: Long = System.nanoTime()): List<SoundEvent> {
         evictStale(asOfNanos)
@@ -88,8 +86,7 @@ class EventTracker(
             ?: Urgency.LOW
 
     private fun effectiveRank(event: SoundEvent): Int =
-        if (event.isPrioritized) maxOf(event.urgency.ordinalRank, Urgency.HIGH.ordinalRank)
-        else event.urgency.ordinalRank
+        event.urgency.ordinalRank
 
     private fun isPriority(label: String): Boolean =
         priorityLabels.any {

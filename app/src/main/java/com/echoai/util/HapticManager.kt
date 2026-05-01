@@ -12,9 +12,10 @@ import com.echoai.domain.Urgency
  * Fires urgency-differentiated vibration patterns. Each tier has a distinct pattern and
  * a cooldown to avoid continuous buzzing during sustained detections.
  *
- * Prioritized events (from the active sound profile) are treated as at least HIGH urgency
- * for haptic purposes, so a "door knock" in the Home profile fires even if its base
- * urgency would only be MEDIUM.
+ * Haptics follow resolved urgency exactly:
+ * - LOW / MEDIUM: no buzz
+ * - HIGH: short warning buzz
+ * - CRITICAL: stronger repeated buzz
  */
 class HapticManager(context: Context) {
 
@@ -28,13 +29,13 @@ class HapticManager(context: Context) {
 
     private val patterns = mapOf(
         Urgency.CRITICAL to VibrationEffect.createWaveform(
-            longArrayOf(0, 100, 50, 100, 50, 100),
-            intArrayOf(0, 255, 0, 255, 0, 255),
+            longArrayOf(0, 140, 60, 140, 60, 140, 60, 220),
+            intArrayOf(0, 255, 0, 255, 0, 255, 0, 255),
             -1,
         ),
         Urgency.HIGH to VibrationEffect.createWaveform(
-            longArrayOf(0, 200, 100, 200),
-            intArrayOf(0, 200, 0, 200),
+            longArrayOf(0, 180),
+            intArrayOf(0, 190),
             -1,
         ),
     )
@@ -56,18 +57,11 @@ class HapticManager(context: Context) {
         lastFiredAt[urgency] = now
     }
 
-    /** Fire the single highest-priority pattern from the active event list. Prioritized events
-     *  are boosted to at least HIGH so they trigger haptics even when base urgency is LOW/MEDIUM. */
+    /** Fire the single highest-urgency pattern from the active event list. */
     fun vibrateForHighest(events: List<SoundEvent>) {
-        val top = events.maxByOrNull { effectiveRank(it) } ?: return
-        val effectiveUrgency = if (top.isPrioritized && top.urgency.ordinalRank < Urgency.HIGH.ordinalRank)
-            Urgency.HIGH else top.urgency
-        if (effectiveUrgency.ordinalRank >= Urgency.HIGH.ordinalRank) {
-            vibrateFor(effectiveUrgency)
+        val top = events.maxByOrNull { it.urgency.ordinalRank } ?: return
+        if (top.urgency.ordinalRank >= Urgency.HIGH.ordinalRank) {
+            vibrateFor(top.urgency)
         }
     }
-
-    private fun effectiveRank(event: SoundEvent): Int =
-        if (event.isPrioritized) maxOf(event.urgency.ordinalRank, Urgency.HIGH.ordinalRank)
-        else event.urgency.ordinalRank
 }

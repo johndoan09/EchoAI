@@ -7,6 +7,10 @@ import android.text.TextWatcher
 import android.view.View
 import androidx.activity.OnBackPressedCallback
 import androidx.appcompat.app.AppCompatActivity
+import androidx.core.view.ViewCompat
+import androidx.core.view.WindowCompat
+import androidx.core.view.WindowInsetsCompat
+import androidx.core.view.updatePadding
 import androidx.lifecycle.lifecycleScope
 import androidx.recyclerview.widget.LinearLayoutManager
 import com.echoai.R
@@ -31,8 +35,10 @@ class ProfileActivity : AppCompatActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        WindowCompat.setDecorFitsSystemWindows(window, false)
         binding = ActivityProfileBinding.inflate(layoutInflater)
         setContentView(binding.root)
+        installSystemBarInsets()
 
         profileId = intent.getStringExtra(EXTRA_PROFILE_ID) ?: SoundProfile.DEFAULT_ID
         profileManager = ProfileManager(applicationContext)
@@ -117,6 +123,25 @@ class ProfileActivity : AppCompatActivity() {
                 R.string.profile_subtitle, profile.name, labels.size
             )
         }
+    }
+
+    private fun installSystemBarInsets() {
+        val rootStartLeft = binding.root.paddingLeft
+        val rootStartTop = binding.root.paddingTop
+        val rootStartRight = binding.root.paddingRight
+        val rootStartBottom = binding.root.paddingBottom
+
+        ViewCompat.setOnApplyWindowInsetsListener(binding.root) { view, insets ->
+            val systemBars = insets.getInsets(WindowInsetsCompat.Type.systemBars())
+            view.updatePadding(
+                left = rootStartLeft + systemBars.left,
+                top = rootStartTop + systemBars.top,
+                right = rootStartRight + systemBars.right,
+                bottom = rootStartBottom + systemBars.bottom,
+            )
+            insets
+        }
+        ViewCompat.requestApplyInsets(binding.root)
     }
 
     private fun updateSaveBar() {

@@ -3,6 +3,10 @@ package com.echoai.ui
 import android.os.Bundle
 import android.view.View
 import androidx.appcompat.app.AppCompatActivity
+import androidx.core.view.ViewCompat
+import androidx.core.view.WindowCompat
+import androidx.core.view.WindowInsetsCompat
+import androidx.core.view.updatePadding
 import androidx.recyclerview.widget.LinearLayoutManager
 import com.echoai.databinding.ActivityHistoryBinding
 import com.echoai.domain.SoundHistoryManager
@@ -16,8 +20,10 @@ class HistoryActivity : AppCompatActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        WindowCompat.setDecorFitsSystemWindows(window, false)
         binding = ActivityHistoryBinding.inflate(layoutInflater)
         setContentView(binding.root)
+        installSystemBarInsets()
 
         historyManager = SoundHistoryManager(applicationContext)
         highlightLabel = intent.getStringExtra(EXTRA_HIGHLIGHT_LABEL)
@@ -39,6 +45,25 @@ class HistoryActivity : AppCompatActivity() {
         binding.historyList.adapter = adapter
 
         loadHistory()
+    }
+
+    private fun installSystemBarInsets() {
+        val rootStartLeft = binding.root.paddingLeft
+        val rootStartTop = binding.root.paddingTop
+        val rootStartRight = binding.root.paddingRight
+        val rootStartBottom = binding.root.paddingBottom
+
+        ViewCompat.setOnApplyWindowInsetsListener(binding.root) { view, insets ->
+            val systemBars = insets.getInsets(WindowInsetsCompat.Type.systemBars())
+            view.updatePadding(
+                left = rootStartLeft + systemBars.left,
+                top = rootStartTop + systemBars.top,
+                right = rootStartRight + systemBars.right,
+                bottom = rootStartBottom + systemBars.bottom,
+            )
+            insets
+        }
+        ViewCompat.requestApplyInsets(binding.root)
     }
 
     override fun onResume() {
