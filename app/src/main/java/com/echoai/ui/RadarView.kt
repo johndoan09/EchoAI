@@ -25,7 +25,7 @@ import kotlin.math.min
  *
  * Visual structure:
  *   - 4 concentric circular rings + axis lines + FRONT/REAR/L/R labels (design handoff)
- *   - rotating sweep + 3 staggered pulse rings while listening (design handoff)
+ *   - rotating sweep while listening (design handoff)
  *   - belief halo arc segments + peak arrow around the perimeter, world-frame anchored
  *     via the IMU yaw so a fixed source stays put as the phone rotates
  *   - per-event dots positioned along the long axis only (Y = bottomIld, X = center).
@@ -70,10 +70,6 @@ class RadarView @JvmOverloads constructor(
         strokeCap = Paint.Cap.ROUND
         strokeWidth = dp(1.6f)
     }
-    private val pulsePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        style = Paint.Style.STROKE
-        strokeWidth = dp(1.2f)
-    }
     private val pipFillPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.FILL }
     private val pipInnerPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.FILL }
     private val eventHaloPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.FILL }
@@ -95,7 +91,6 @@ class RadarView @JvmOverloads constructor(
     }
 
     private var sweepDeg: Float = 0f
-    private var pulseProgress: Float = 0f
 
     private val sweepAnimator = ValueAnimator.ofFloat(0f, 360f).apply {
         duration = SWEEP_PERIOD_MS
@@ -106,16 +101,6 @@ class RadarView @JvmOverloads constructor(
             postInvalidateOnAnimation()
         }
     }
-    private val pulseAnimator = ValueAnimator.ofFloat(0f, 1f).apply {
-        duration = PULSE_PERIOD_MS
-        interpolator = LinearInterpolator()
-        repeatCount = ValueAnimator.INFINITE
-        addUpdateListener {
-            pulseProgress = it.animatedValue as Float
-            postInvalidateOnAnimation()
-        }
-    }
-
     private var orientationProvider: WorldOrientationProvider? = null
     private var yawRefreshScheduled = false
     private val yawCallback = object : Choreographer.FrameCallback {
@@ -136,7 +121,6 @@ class RadarView @JvmOverloads constructor(
         axisPaint.color = ContextCompat.getColor(context, R.color.radar_axis)
         labelPaint.color = ContextCompat.getColor(context, R.color.muted)
         sweepPaint.color = 0x59000000.toInt()      // rgba(0,0,0,0.35)
-        pulsePaint.color = 0x80000000.toInt()      // rgba(0,0,0,0.5)
         pipFillPaint.color = ContextCompat.getColor(context, R.color.radar_pip)
         pipInnerPaint.color = ContextCompat.getColor(context, R.color.surface)
     }
@@ -204,12 +188,9 @@ class RadarView @JvmOverloads constructor(
         )
         if (active) {
             sweepAnimator.start()
-            pulseAnimator.start()
         } else {
             sweepAnimator.cancel()
-            pulseAnimator.cancel()
             sweepDeg = 0f
-            pulseProgress = 0f
         }
         invalidate()
     }
@@ -221,7 +202,6 @@ class RadarView @JvmOverloads constructor(
 
     override fun onDetachedFromWindow() {
         sweepAnimator.cancel()
-        pulseAnimator.cancel()
         stopYawRefresh()
         super.onDetachedFromWindow()
     }
@@ -257,14 +237,6 @@ class RadarView @JvmOverloads constructor(
         drawBeliefHalo(canvas, cx, cy, maxRadius)
 
         if (listening) {
-            for (i in 0..2) {
-                val phase = ((pulseProgress + i / 3f) % 1f)
-                val r = lerp(dp(5f), maxRadius, phase)
-                val alpha = ((1f - phase) * 0.7f * 255f).toInt().coerceIn(0, 255)
-                pulsePaint.alpha = alpha
-                canvas.drawCircle(cx, cy, r, pulsePaint)
-            }
-
             val sweepRad = Math.toRadians((sweepDeg - 90f).toDouble())
             val sx = cx + maxRadius * Math.cos(sweepRad).toFloat()
             val sy = cy + maxRadius * Math.sin(sweepRad).toFloat()
@@ -418,11 +390,9 @@ class RadarView @JvmOverloads constructor(
 
     private fun dp(value: Float): Float = value * resources.displayMetrics.density
     private fun sp(value: Float): Float = value * resources.displayMetrics.scaledDensity
-    private fun lerp(a: Float, b: Float, t: Float): Float = a + (b - a) * t
 
     companion object {
         private const val SWEEP_PERIOD_MS = 3000L
-        private const val PULSE_PERIOD_MS = 6000L
         private const val MAX_VISIBLE_EVENTS = 4
 
         /** Amplifier on `bot_ild` before clamping for the Y axis. CSV shows confident

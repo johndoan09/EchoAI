@@ -15,7 +15,6 @@ import java.util.Collections
 
 class SceneChipAdapter(
     private val onChipClick: (SoundProfile) -> Unit,
-    private val onChipLongClick: (SoundProfile) -> Unit,
     private val onAddClick: () -> Unit,
     private val onDragStart: (RecyclerView.ViewHolder) -> Unit,
 ) : RecyclerView.Adapter<RecyclerView.ViewHolder>() {
@@ -94,13 +93,9 @@ class SceneChipAdapter(
                 holder.dragHandle.setColorFilter(color)
 
                 holder.itemView.setOnClickListener { onChipClick(profile) }
-                if (!profile.isPreset) {
-                    holder.itemView.setOnLongClickListener {
-                        onChipLongClick(profile)
-                        true
-                    }
-                } else {
-                    holder.itemView.setOnLongClickListener(null)
+                holder.itemView.setOnLongClickListener {
+                    onDragStart(holder)
+                    true
                 }
                 holder.dragHandle.setOnTouchListener { _, event ->
                     if (event.actionMasked == MotionEvent.ACTION_DOWN) {

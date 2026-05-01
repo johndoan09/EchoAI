@@ -37,4 +37,16 @@
     <string name="unsaved_changes_title">Unsaved Changes</string>
     <string name="unsaved_changes_message">You have unsaved changes to your sound selection. Discard them?</string>
     <string name="rotate_hint">Rotate phone to update location readings</string>
+    <string name="profile_options_title">Profile Options</string>
+    <string name="current_profile">Current listening profile</string>
+    <string name="tap_hold_to_reorder">Tap and hold a profile chip to reorder.</string>
+    <string name="use_profile">Use Profile</string>
+    <string name="rename_profile">Rename</string>
+    <string name="delete_profile">Delete</string>
+    <string name="rename_profile_title">Rename Profile</string>
+    <string name="profile_name_hint">Profile name</string>
+    <string name="delete_profile_title">Delete \"%1$s\"?</string>
+    <string name="delete_profile_message">This will remove the profile and all its custom settings.</string>
+    <string name="delete_last_profile_title">Can’t Delete This Profile</string>
+    <string name="delete_last_profile_message">Create another profile first, then try again.</string>
 </resources>

@@ -66,7 +66,7 @@ class HistoryActivity : AppCompatActivity() {
                 right = rootStartRight + systemBars.right,
             )
             binding.bottomTabBar.updatePadding(
-                bottom = tabStartBottom + systemBars.bottom
+                bottom = tabStartBottom + ((systemBars.bottom * 3) / 4)
             )
             insets
         }

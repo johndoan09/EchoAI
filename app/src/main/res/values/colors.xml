@@ -14,7 +14,7 @@
     <color name="muted">#A0998E</color>
     <color name="accent">#4A7C6F</color>
     <color name="accentBg">#1A4A7C6F</color>
-    <color name="tabBar">#F5F3F0</color>
+    <color name="tabBar">#FFFFFF</color>
     <color name="overlayScrim">#A6000000</color>
 
     <!-- Urgency palette (safety critical) -->

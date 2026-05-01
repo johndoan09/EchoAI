@@ -1,6 +1,7 @@
 package com.echoai.ui
 
 import android.Manifest
+import android.app.ActivityOptions
 import android.animation.ValueAnimator
 import android.annotation.SuppressLint
 import android.app.AlertDialog
@@ -9,8 +10,12 @@ import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Bundle
 import android.text.Html
+import android.text.InputType
+import android.view.LayoutInflater
 import android.view.View
+import android.view.ViewGroup
 import android.view.animation.DecelerateInterpolator
+import android.view.inputmethod.InputMethodManager
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.content.ContextCompat
@@ -26,6 +31,9 @@ import com.echoai.R
 import com.echoai.audio.AudioCaptureManager
 import com.echoai.audio.AudioWindow
 import com.echoai.databinding.ActivityMainBinding
+import com.echoai.databinding.SheetProfileMessageBinding
+import com.echoai.databinding.SheetRenameProfileBinding
+import com.echoai.databinding.SheetProfileOptionsBinding
 import com.echoai.diagnostics.DiagnosticsLogger
 import com.echoai.domain.BeliefDistribution
 import com.echoai.domain.ClassificationResult
@@ -44,6 +52,7 @@ import com.echoai.pipeline.FusionStage
 import com.echoai.pipeline.LocalizationStage
 import com.echoai.sensor.RotationVectorProvider
 import com.echoai.util.HapticManager
+import com.google.android.material.bottomsheet.BottomSheetDialog
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.async
@@ -100,6 +109,7 @@ class MainActivity : AppCompatActivity() {
     private var pipelineJob: Job? = null
     private var liveActive = false
     private var pinnedSectionVisible = false
+    private var rotateHintVisible = false
     private var diagnosticsLogger: DiagnosticsLogger? = null
 
     // Classification cache: at 8 Hz localization / 2 Hz classification, every 4th window
@@ -144,13 +154,7 @@ class MainActivity : AppCompatActivity() {
             refreshPinnedSection()
         }
         binding.tabListening.setOnClickListener { /* already here */ }
-        binding.tabProfile.setOnClickListener {
-            startActivity(
-                Intent(this, ProfileActivity::class.java).apply {
-                    putExtra(ProfileActivity.EXTRA_PROFILE_ID, profileManager.activeProfile.value.id)
-                }
-            )
-        }
+        binding.tabProfile.setOnClickListener { openProfileWithoutAnimation() }
 
         setupSceneChips()
 
@@ -163,8 +167,7 @@ class MainActivity : AppCompatActivity() {
 
     private fun setupSceneChips() {
         sceneChipAdapter = SceneChipAdapter(
-            onChipClick = { profileManager.setActiveProfileId(it.id) },
-            onChipLongClick = { showDeleteProfileDialog(it) },
+            onChipClick = { showProfileOptionsSheet(it) },
             onAddClick = {
                 CreateProfileSheet.show(this) { name ->
                     val profile = profileManager.createProfile(name)
@@ -248,7 +251,7 @@ class MainActivity : AppCompatActivity() {
                 right = rootStartRight + systemBars.right,
             )
             binding.bottomTabBar.updatePadding(
-                bottom = tabStartBottom + systemBars.bottom
+                bottom = tabStartBottom + ((systemBars.bottom * 3) / 4)
             )
             insets
         }
@@ -273,10 +276,18 @@ class MainActivity : AppCompatActivity() {
             @Suppress("DEPRECATION") Html.fromHtml(raw)
     }
 
+    private fun openProfileWithoutAnimation() {
+        val intent = Intent(this, ProfileActivity::class.java).apply {
+            putExtra(ProfileActivity.EXTRA_PROFILE_ID, profileManager.activeProfile.value.id)
+        }
+        startActivity(intent, ActivityOptions.makeCustomAnimation(this, 0, 0).toBundle())
+    }
+
     // --- Pinned alerts ---
 
     private fun refreshPinnedSection(animate: Boolean = true) {
         val alerts = pinnedAlertTracker.snapshot()
+        updatePinnedAlertListHeight(alerts.size)
         pinnedAdapter.submitList(alerts)
         val nowVisible = alerts.isNotEmpty()
         binding.pinnedAlertsSection.visibility = if (nowVisible) View.VISIBLE else View.GONE
@@ -286,11 +297,36 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
+    private fun updatePinnedAlertListHeight(alertCount: Int) {
+        val targetHeight = if (alertCount > PINNED_ALERT_SCROLL_THRESHOLD) {
+            (PINNED_ALERT_MAX_HEIGHT_DP * resources.displayMetrics.density).toInt()
+        } else {
+            ViewGroup.LayoutParams.WRAP_CONTENT
+        }
+        val params = binding.pinnedAlertsList.layoutParams
+        if (params.height != targetHeight) {
+            params.height = targetHeight
+            binding.pinnedAlertsList.layoutParams = params
+        }
+        binding.pinnedAlertsList.isNestedScrollingEnabled = alertCount > PINNED_ALERT_SCROLL_THRESHOLD
+    }
+
+    private fun setRotateHintVisible(visible: Boolean, animate: Boolean = true) {
+        if (rotateHintVisible == visible && binding.rotateHint.visibility == if (visible) View.VISIBLE else View.GONE) {
+            return
+        }
+        rotateHintVisible = visible
+        binding.rotateHint.visibility = if (visible) View.VISIBLE else View.GONE
+        applyLiveToggleState(expanded = !pinnedSectionVisible, animate = animate)
+    }
+
     private fun applyLiveToggleState(expanded: Boolean, animate: Boolean) {
         val dp = resources.displayMetrics.density
-        val targetBtnPadH = ((if (expanded) 46 else 24) * dp).toInt()
-        val targetBtnPadV = ((if (expanded) 21 else 12) * dp).toInt()
-        val targetContainerPadBottom = ((if (expanded) 32 else 2) * dp).toInt()
+        val targetBtnPadH = ((if (rotateHintVisible) 16 else if (expanded) 34 else 24) * dp).toInt()
+        val targetBtnPadV = ((if (rotateHintVisible) 4 else 12) * dp).toInt()
+        val targetContainerPadBottom = ((if (rotateHintVisible) 0 else if (expanded) 8 else 2) * dp).toInt()
+        val targetTextSize = if (rotateHintVisible) 13f else 15f
+        binding.liveToggle.textSize = targetTextSize
 
         if (animate) {
             val fromPadH = binding.liveToggle.paddingLeft
@@ -346,13 +382,93 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
+    private fun showProfileOptionsSheet(profile: SoundProfile) {
+        val dialog = BottomSheetDialog(this, R.style.Theme_EchoAI_BottomSheet)
+        val sheet = SheetProfileOptionsBinding.inflate(LayoutInflater.from(this))
+        val active = profile.id == profileManager.activeProfile.value.id
+
+        sheet.profileNameText.text = profile.name
+        sheet.profileStatusText.text = if (active) {
+            getString(R.string.current_profile)
+        } else {
+            getString(R.string.tap_hold_to_reorder)
+        }
+        sheet.useProfileButton.visibility = if (active) View.GONE else View.VISIBLE
+        sheet.useProfileButton.setOnClickListener {
+            profileManager.setActiveProfileId(profile.id)
+            dialog.dismiss()
+        }
+        sheet.renameButton.setOnClickListener {
+            dialog.dismiss()
+            showRenameProfileDialog(profile)
+        }
+        sheet.deleteButton.setOnClickListener {
+            dialog.dismiss()
+            showDeleteProfileDialog(profile)
+        }
+
+        dialog.setContentView(sheet.root)
+        dialog.show()
+    }
+
+    private fun showRenameProfileDialog(profile: SoundProfile) {
+        val dialog = BottomSheetDialog(this, R.style.Theme_EchoAI_BottomSheet)
+        val sheet = SheetRenameProfileBinding.inflate(LayoutInflater.from(this))
+
+        sheet.currentNameText.text = profile.name
+        sheet.profileNameInput.setText(profile.name)
+        sheet.profileNameInput.inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_CAP_WORDS
+        sheet.profileNameInput.selectAll()
+
+        sheet.cancelButton.setOnClickListener { dialog.dismiss() }
+        sheet.renameButton.setOnClickListener {
+            val name = sheet.profileNameInput.text.toString().trim()
+            if (name.isNotEmpty()) {
+                profileManager.renameProfile(profile.id, name)
+                dialog.dismiss()
+            }
+        }
+
+        dialog.setContentView(sheet.root)
+        dialog.show()
+
+        sheet.profileNameInput.requestFocus()
+        sheet.profileNameInput.post {
+            val imm = getSystemService(INPUT_METHOD_SERVICE) as InputMethodManager
+            imm.showSoftInput(sheet.profileNameInput, InputMethodManager.SHOW_IMPLICIT)
+            sheet.profileNameInput.selectAll()
+        }
+    }
+
     private fun showDeleteProfileDialog(profile: SoundProfile) {
+        if (!profileManager.canDeleteProfile(profile.id)) {
+            showProfileMessageSheet(
+                title = getString(R.string.delete_last_profile_title),
+                message = getString(R.string.delete_last_profile_message),
+            )
+            return
+        }
+
         AlertDialog.Builder(this)
-            .setTitle("Delete \"${profile.name}\"?")
-            .setMessage("This will remove the profile and all its custom settings.")
-            .setPositiveButton("Delete") { _, _ -> profileManager.deleteProfile(profile.id) }
-            .setNegativeButton("Cancel", null)
+            .setTitle(getString(R.string.delete_profile_title, profile.name))
+            .setMessage(getString(R.string.delete_profile_message))
+            .setPositiveButton(getString(R.string.delete_profile)) { _, _ ->
+                profileManager.deleteProfile(profile.id)
+            }
+            .setNegativeButton(getString(R.string.cancel), null)
             .show()
+    }
+
+    private fun showProfileMessageSheet(title: String, message: String) {
+        val dialog = BottomSheetDialog(this, R.style.Theme_EchoAI_BottomSheet)
+        val sheet = SheetProfileMessageBinding.inflate(LayoutInflater.from(this))
+
+        sheet.messageTitleText.text = title
+        sheet.messageBodyText.text = message
+        sheet.doneButton.setOnClickListener { dialog.dismiss() }
+
+        dialog.setContentView(sheet.root)
+        dialog.show()
     }
 
     // --- Live pipeline ---
@@ -387,6 +503,7 @@ class MainActivity : AppCompatActivity() {
         classificationFrameCounter = 0
         yawHistory.clear()
         rotateHintFrames = 0
+        setRotateHintVisible(false, animate = false)
         orientationProvider.start()
         binding.radarView.setOrientationProvider(orientationProvider)
 
@@ -402,8 +519,7 @@ class MainActivity : AppCompatActivity() {
                         phoneYawDegrees = frame.phoneYaw,
                         peakWorldAngle = frame.beliefPeakAngle,
                     )
-                    binding.rotateHint.visibility =
-                        if (frame.showRotateHint) View.VISIBLE else View.GONE
+                    setRotateHintVisible(frame.showRotateHint)
                     hapticManager.vibrateForHighest(frame.events)
                     updateStatus(frame.events)
                     pinnedAlertTracker.onEvents(frame.events)
@@ -433,7 +549,7 @@ class MainActivity : AppCompatActivity() {
         binding.statusText.text = getString(R.string.live_idle)
         binding.radarView.setListening(false)
         binding.radarView.setEvents(emptyList())
-        binding.rotateHint.visibility = View.GONE
+        setRotateHintVisible(false, animate = false)
 
         val err = captureManager.lastErrorMessage()
         if (err != null) binding.statusText.text = "Stopped — error: $err"
@@ -574,5 +690,7 @@ class MainActivity : AppCompatActivity() {
         /** Consecutive frames the (audio + still) condition must hold before showing the hint
          *  (~1.5 s at 8 Hz). Hides immediately when either condition flips. */
         private const val ROTATE_HINT_DEBOUNCE_FRAMES = 12
+        private const val PINNED_ALERT_SCROLL_THRESHOLD = 3
+        private const val PINNED_ALERT_MAX_HEIGHT_DP = 220
     }
 }

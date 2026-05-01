@@ -77,25 +77,25 @@
             android:id="@+id/radarView"
             android:layout_width="match_parent"
             android:layout_height="match_parent" />
-
-        <!-- IMU rotate hint: shown when audio is active but the phone is held still
-             (the rotational-aperture localizer needs rotation to localize). -->
-        <TextView
-            android:id="@+id/rotateHint"
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:layout_gravity="bottom|center_horizontal"
-            android:layout_marginBottom="6dp"
-            android:background="@drawable/bg_pinned_banner"
-            android:fontFamily="sans-serif-medium"
-            android:paddingHorizontal="12dp"
-            android:paddingVertical="6dp"
-            android:text="@string/rotate_hint"
-            android:textColor="@color/accent"
-            android:textSize="11sp"
-            android:visibility="gone"
-            tools:visibility="visible" />
     </FrameLayout>
+
+    <!-- IMU rotate hint: shown when audio is active but the phone is held still. -->
+    <TextView
+        android:id="@+id/rotateHint"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_gravity="center_horizontal"
+        android:layout_marginTop="2dp"
+        android:layout_marginBottom="4dp"
+        android:background="@drawable/bg_pinned_banner"
+        android:fontFamily="sans-serif-medium"
+        android:paddingHorizontal="12dp"
+        android:paddingVertical="6dp"
+        android:text="@string/rotate_hint"
+        android:textColor="@color/accent"
+        android:textSize="11sp"
+        android:visibility="gone"
+        tools:visibility="visible" />
 
     <!-- Floating Start/Listening pill button -->
     <LinearLayout
