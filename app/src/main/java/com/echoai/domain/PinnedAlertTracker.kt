@@ -73,10 +73,15 @@ class PinnedAlertTracker(context: Context) {
         saveToStorage()
     }
 
-    fun snapshot(): List<PinnedAlert> =
-        pinned.values.sortedByDescending { it.detectedAtMs }
+    fun snapshot(): List<PinnedAlert> {
+        loadFromStorage()
+        return pinned.values.sortedByDescending { it.detectedAtMs }
+    }
 
-    fun isEmpty(): Boolean = pinned.isEmpty()
+    fun isEmpty(): Boolean {
+        loadFromStorage()
+        return pinned.isEmpty()
+    }
 
     private fun loadFromStorage() {
         pinned.clear()
