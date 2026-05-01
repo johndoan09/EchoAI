@@ -22,6 +22,7 @@ import com.echoai.databinding.ActivityProfileBinding
 import com.echoai.domain.ProfileManager
 import com.echoai.domain.SoundProfile
 import com.echoai.domain.UrgencyClassifier
+import com.echoai.util.AppForegroundTracker
 import com.echoai.util.YamnetLabelLoader
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -153,6 +154,16 @@ class ProfileActivity : AppCompatActivity() {
                 R.string.profile_subtitle, profile.name, labels.size
             )
         }
+    }
+
+    override fun onStart() {
+        super.onStart()
+        AppForegroundTracker.onActivityStarted()
+    }
+
+    override fun onStop() {
+        AppForegroundTracker.onActivityStopped()
+        super.onStop()
     }
 
     private fun installSystemBarInsets() {

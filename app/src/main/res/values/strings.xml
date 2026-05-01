@@ -50,4 +50,13 @@
     <string name="delete_profile_message">This will remove the profile and all its custom settings.</string>
     <string name="delete_last_profile_title">Can’t Delete This Profile</string>
     <string name="delete_last_profile_message">Create another profile first, then try again.</string>
+    <string name="passive_monitoring_channel">Background listening</string>
+    <string name="passive_monitoring_channel_description">Background microphone listening status.</string>
+    <string name="passive_alerts_channel">Urgent sound alerts</string>
+    <string name="passive_alerts_channel_description">Notifications for high and critical sounds detected while EchoAI listens in the background.</string>
+    <string name="passive_monitoring_title">EchoAI is listening for urgent sounds</string>
+    <string name="passive_monitoring_body">High and critical sounds will trigger alerts while the app is in the background.</string>
+    <string name="passive_monitoring_profile">Background Listening</string>
+    <string name="passive_urgent_alert_title">Urgent sound detected</string>
+    <string name="passive_urgent_alert_body">%1$s detected · %2$s urgency</string>
 </resources>

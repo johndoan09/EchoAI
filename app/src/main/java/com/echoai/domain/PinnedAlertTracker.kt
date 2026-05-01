@@ -2,6 +2,9 @@ package com.echoai.domain
 
 import android.content.Context
 import android.content.SharedPreferences
+import kotlinx.coroutines.flow.MutableSharedFlow
+import kotlinx.coroutines.flow.SharedFlow
+import kotlinx.coroutines.flow.asSharedFlow
 import org.json.JSONArray
 import org.json.JSONObject
 
@@ -11,6 +14,15 @@ data class PinnedAlert(
     val isPrioritized: Boolean,
     val detectedAtMs: Long,
 )
+
+object PinnedAlertUpdates {
+    private val _updates = MutableSharedFlow<Unit>(extraBufferCapacity = 1)
+    val updates: SharedFlow<Unit> = _updates.asSharedFlow()
+
+    fun notifyChanged() {
+        _updates.tryEmit(Unit)
+    }
+}
 
 /**
  * Collects HIGH/CRITICAL events into a persistent unacknowledged set. Entries survive
@@ -61,8 +73,10 @@ class PinnedAlertTracker(context: Context) {
         saveToStorage()
     }
 
-    fun snapshot(): List<PinnedAlert> =
-        pinned.values.sortedByDescending { it.detectedAtMs }
+    fun snapshot(): List<PinnedAlert> {
+        loadFromStorage()
+        return pinned.values.sortedByDescending { it.detectedAtMs }
+    }
 
     fun isEmpty(): Boolean = pinned.isEmpty()
 
@@ -97,6 +111,7 @@ class PinnedAlertTracker(context: Context) {
             })
         }
         prefs.edit().putString(KEY_ALERTS, entries.toString()).apply()
+        PinnedAlertUpdates.notifyChanged()
     }
 
     companion object {

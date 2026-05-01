@@ -13,6 +13,7 @@ import com.echoai.databinding.ActivityHistoryBinding
 import com.echoai.domain.ProfileManager
 import com.echoai.domain.SoundProfile
 import com.echoai.domain.SoundHistoryManager
+import com.echoai.util.AppForegroundTracker
 
 class HistoryActivity : AppCompatActivity() {
 
@@ -50,6 +51,16 @@ class HistoryActivity : AppCompatActivity() {
         binding.historyList.adapter = adapter
 
         loadHistory()
+    }
+
+    override fun onStart() {
+        super.onStart()
+        AppForegroundTracker.onActivityStarted()
+    }
+
+    override fun onStop() {
+        AppForegroundTracker.onActivityStopped()
+        super.onStop()
     }
 
     private fun installSystemBarInsets() {
