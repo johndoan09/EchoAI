@@ -10,7 +10,87 @@ echoAI continuously listens to the world around the user, classifies what it hea
 
 ## The problem
 
-Deaf and hard-of-hearing individuals can't rely on hearing to detect environmental hazards: sirens, car horns, alarms, shouting, approaching footsteps, dogs barking, doorbells. Existing solutions either require dedicated hardware (smartwatches, custom hearing aids) or constant cloud connectivity (privacy-hostile, fails offline). echoAI is a fully on-device, phone-native solution: install the APK, grant the mic permission, and the phone becomes a continuously listening, spatial-aware safety assistant.
+Deaf and hard-of-hearing individuals face significant challenges when relying on hearing to detect environmental hazards like sirens, car horns, alarms, or approaching footsteps. While hearing aids offer a solution, they are not universally accessible. According to the NIH, among US adults who could benefit from hearing aids, only a small proportion have ever used them (16% for adults ages 20–69, and 30% for adults 70+). Furthermore, studies indicate that hearing aids can distort spatial localization, be physically uncomfortable to wear if not perfectly calibrated, and remain financially inaccessible for many.
+
+In the absence of hearing aids, traditional device accessibility alerts (such as screen flashes or device vibrations) signal that a sound occurred, but they fail to convey *what* the sound is or *where* it is coming from. Knowing that a sound occurred is helpful, but knowing its identity and origin in a fast, convenient fashion is an equally crucial factor for safety. Existing external solutions often require dedicated hardware (smartwatches, custom hearing aids) or constant cloud connectivity—compromising privacy and failing completely offline.
+
+EchoAI bridges this gap. By consolidating a vast range of sound identification with visual urgency cue localization, it provides a fully on-device, phone-native accessibility tool. EchoAI empowers users who have difficulty accessing or using hearing aids with an everyday assistant that not only instantly identifies urgent sounds, but directs the user right to the source to address them. Simply install the APK, grant the mic permission, and the phone becomes a continuously listening, spatial-aware safety assistant.
+
+---
+
+## Hardware & software requirements
+
+- **Target device:** Samsung Galaxy S25 Ultra (Snapdragon 8 Elite). Other recent Snapdragon devices with NNAPI support also work but the dual-mic capture topology is calibrated against this specific HAL.
+- **Android Studio:** Ladybug (2024.2) or newer.
+- **Android SDK:** Platform 35 installed.
+- **JDK:** 17 or newer.
+- **Permissions requested at runtime:** `RECORD_AUDIO`, `VIBRATE`, `FOREGROUND_SERVICE`, `FOREGROUND_SERVICE_MICROPHONE`, `POST_NOTIFICATIONS` (Android 13+).
+
+---
+
+## Setup from scratch
+
+### Prerequisites (Zero to Native Build)
+To build this project from absolute scratch, you will need the following core toolchain installed on your machine:
+1. **Git**: For version control (e.g., running `brew install git` on macOS).
+2. **Java Development Kit (JDK) 17 or newer**: Required to run the Gradle build system.
+3. **Android Studio (Ladybug 2024.2 or newer)**: The most reliable way to fetch the required Android SDKs.
+4. **Android SDK Platform 35**: Installed via Android Studio's SDK Manager.
+
+### Step 1: Clone and Configure
+First, clone the repository to your local machine:
+```sh
+git clone [https://github.com/johndoan09/EchoAI.git](https://github.com/johndoan09/EchoAI.git)
+cd EchoAI
+```
+
+Next, ensure the project knows where your Android SDK is located. If it isn't at the default location, you must create a `local.properties` file at the root of the project. For a standard macOS installation, run:
+```sh
+echo "sdk.dir=$HOME/Library/Android/sdk" > local.properties
+```
+
+From here, choose the flow that matches your current setup:
+
+### Flow A: Build and Run on a Connected Device
+This flow is ideal if you have the target hardware—like a Samsung Galaxy S25 Ultra—on hand and want to deploy the app directly.
+
+1. On your phone, enable **Developer Options** and turn on **USB Debugging**.
+2. Connect the phone to your machine via USB.
+3. Verify the device is recognized by the Android Debug Bridge (ADB):
+   ```sh
+   adb devices
+   ```
+4. Compile the application and install it directly to your connected phone:
+   ```sh
+   ./gradlew installDebug
+   ```
+*(Alternatively: Open the cloned folder in Android Studio, allow Gradle to sync its dependencies, select your physical device from the target drop-down in the top toolbar, and click the green "Play" button to build and launch).*
+
+### Flow B: Build an APK (No Device Connected)
+If you do not have a device plugged in and simply want to compile the standalone Android Package Kit (APK) file for sideloading or distribution later:
+
+1. From the root directory of the repository, execute the assemble task:
+   ```sh
+   ./gradlew assembleDebug
+   ```
+   *Note: The first time you run a Gradle command, it will download necessary distributions and project dependencies (~500 MB). Subsequent builds are incremental and much faster.*
+2. Once the build reads `BUILD SUCCESSFUL`, you can locate your compiled APK at the following path:
+   `app/build/outputs/apk/debug/app-debug.apk`
+
+---
+
+## Run & usage
+
+1. **Launch echoAI.** Grant `RECORD_AUDIO` (and `POST_NOTIFICATIONS` on Android 13+) when prompted.
+2. **Pick a scene profile** from the chip strip at the top, or stick with "Default" (listens for everything).
+3. **Tap the "Start Live" pill button** at the bottom. The radar starts sweeping; the per-channel mic activity reflects in the haloed dots.
+4. **Make a noise.** Speak, clap, ring a doorbell, play a siren clip — the corresponding chip will appear on the radar, color-coded by urgency. HIGH/CRITICAL events trigger a vibration pattern and add an entry to the pinned alerts banner.
+5. **Rotate the phone slowly** if the radar shows a dot but no direction arrow — rotational-aperture localization needs ~15° of cumulative rotation to converge a per-label world-frame direction. A "rotate to localize" hint appears automatically when rotation is needed.
+6. **Tap the clock icon** (top-right) to view the 24-hour sound history.
+7. **Manage scene profiles** via the Profile tab at the bottom — add, rename, edit priority labels, override per-label urgency, reorder, delete.
+8. **Background the app** to enter passive monitoring. A notification confirms the service is running; HIGH/CRITICAL events still surface as system notifications + haptic alerts. Re-open the app to resume the full radar pipeline.
+
+To stop monitoring entirely, tap "Pause Live" inside the app — this stops both the foreground pipeline and the passive service.
 
 ---
 
@@ -56,91 +136,9 @@ Deaf and hard-of-hearing individuals can't rely on hearing to detect environment
 
 ---
 
-## Hardware & software requirements
-
-- **Target device:** Samsung Galaxy S25 Ultra (Snapdragon 8 Elite). Other recent Snapdragon devices with NNAPI support also work but the dual-mic capture topology is calibrated against this specific HAL.
-- **Android Studio:** Ladybug (2024.2) or newer.
-- **Android SDK:** Platform 35 installed.
-- **JDK:** 17 or newer.
-- **Permissions requested at runtime:** `RECORD_AUDIO`, `VIBRATE`, `FOREGROUND_SERVICE`, `FOREGROUND_SERVICE_MICROPHONE`, `POST_NOTIFICATIONS` (Android 13+).
-
----
-
-## Setup from scratch
-
-```sh
-# 1. Clone
-git clone https://github.com/johndoan09/EchoAI.git
-cd EchoAI
-
-# 2. Point local.properties at your Android SDK if it isn't at the default location
-echo "sdk.dir=$HOME/Library/Android/sdk" > local.properties   # macOS default
-
-# 3. (Optional) Open in Android Studio. Let it sync Gradle and install any
-#    SDK components it asks for. Otherwise, build and install from CLI:
-
-# 4. Plug in a device with USB debugging enabled
-adb devices
-
-# 5. Build + install the debug APK
-./gradlew installDebug
-
-# Or just produce the APK for sideloading:
-./gradlew assembleDebug
-# → app/build/outputs/apk/debug/app-debug.apk
-```
-
-The first sync downloads ~500 MB of Gradle/SDK dependencies. Subsequent builds are incremental.
-
----
-
-## Run & usage
-
-1. **Launch echoAI.** Grant `RECORD_AUDIO` (and `POST_NOTIFICATIONS` on Android 13+) when prompted.
-2. **Pick a scene profile** from the chip strip at the top, or stick with "Default" (listens for everything).
-3. **Tap the "Start Live" pill button** at the bottom. The radar starts sweeping; the per-channel mic activity reflects in the haloed dots.
-4. **Make a noise.** Speak, clap, ring a doorbell, play a siren clip — the corresponding chip will appear on the radar, color-coded by urgency. HIGH/CRITICAL events trigger a vibration pattern and add an entry to the pinned alerts banner.
-5. **Rotate the phone slowly** if the radar shows a dot but no direction arrow — rotational-aperture localization needs ~15° of cumulative rotation to converge a per-label world-frame direction. A "rotate to localize" hint appears automatically when rotation is needed.
-6. **Tap the clock icon** (top-right) to view the 24-hour sound history.
-7. **Manage scene profiles** via the Profile tab at the bottom — add, rename, edit priority labels, override per-label urgency, reorder, delete.
-8. **Background the app** to enter passive monitoring. A notification confirms the service is running; HIGH/CRITICAL events still surface as system notifications + haptic alerts. Re-open the app to resume the full radar pipeline.
-
-To stop monitoring entirely, tap "Pause Live" inside the app — this stops both the foreground pipeline and the passive service.
-
----
-
-## Tests
-
-The project ships 127 JVM unit tests covering all pure-Kotlin pipeline components. No device or emulator is needed.
-
-```sh
-# Run the full unit test suite
-./gradlew testDebugUnitTest
-
-# Expected output: BUILD SUCCESSFUL
-# HTML report: app/build/reports/tests/testDebugUnitTest/index.html
-```
-
-### What's covered
-
-| Test class | Component tested |
-|---|---|
-| `BeliefDistributionTest` | Bayesian belief math — uniform init, Gaussian-likelihood updates, decay, convergence to known world angle, rotational-aperture mirror resolution |
-| `GccPhatLocalizerTest` | Cross-correlation engine — zero lag on identical signals, correct lag sign on shifted signals, confidence bounds, silent/empty edge cases |
-| `LocalizationStageTest` | Full localization pipeline — ILD formula, front/back bias sign and magnitude, per-channel RMS, metadata passthrough, multi-scale energy picker |
-| `ClassificationStageTest` | YAMNet wrapper — 4-channel downmix, float normalization, padding/trimming to `inputSampleCount`, frame number passthrough |
-| `FusionStageTest` | End-to-end event lifecycle — event creation, temporal refresh, urgency sort, profile application (checkAll, priority filtering, CRITICAL auto-promotion) |
-| `YamnetConsolidationMapTest` | Noisy-OR consolidation math — single/empty groups, top-k limiting, compounding vs max-pool, output clamping, size validation |
-| `StubSoundClassifierTest` | Stub classifier branches — silence/ambient/loud thresholds, confidence ordering |
-| `UrgencyTest` | Urgency enum — ordinal ordering, tint alpha, color differentiation |
-| `DevicePositionTest` | Spatial conversion — ILD noise floor, degree mapping, lag confidence threshold, pair selection |
-| `EventTrackerTest` | Rolling event tracker — confidence threshold, stale eviction, refresh, substring matching, urgency overrides, multi-label independent tracking |
-
----
-
 ## Architecture (brief)
 
-```
+```text
 mic capture (dual CAMCORDER, 16 kHz stereo × 2)
     │
     ├──► classification stage (YAMNet on NPU → 42-group consolidation, top-k noisy-OR)
@@ -177,6 +175,35 @@ These were diagnosed from real CSV diagnostic sessions on the S25 Ultra. They dr
 - **Localization needs rotation to converge.** A single-window ILD measurement is direction-ambiguous (mirror-symmetric across the long axis). The per-label belief distribution accumulates evidence across multiple device-frame views of the same world-frame source — which is why the UI prompts the user to rotate the phone when audio is active but the phone hasn't moved.
 
 For the full design rationale, the unsuccessful experiments that led to the lockdown, and the calibration knobs available for tuning, see `CLAUDE.md` § "Audio Pipeline Details" and § "Known Constraints & Open Questions".
+
+---
+
+## Tests
+
+The project ships 127 JVM unit tests covering all pure-Kotlin pipeline components. No device or emulator is needed.
+
+```sh
+# Run the full unit test suite
+./gradlew testDebugUnitTest
+
+# Expected output: BUILD SUCCESSFUL
+# HTML report: app/build/reports/tests/testDebugUnitTest/index.html
+```
+
+### What's covered
+
+| Test class | Component tested |
+|---|---|
+| `BeliefDistributionTest` | Bayesian belief math — uniform init, Gaussian-likelihood updates, decay, convergence to known world angle, rotational-aperture mirror resolution |
+| `GccPhatLocalizerTest` | Cross-correlation engine — zero lag on identical signals, correct lag sign on shifted signals, confidence bounds, silent/empty edge cases |
+| `LocalizationStageTest` | Full localization pipeline — ILD formula, front/back bias sign and magnitude, per-channel RMS, metadata passthrough, multi-scale energy picker |
+| `ClassificationStageTest` | YAMNet wrapper — 4-channel downmix, float normalization, padding/trimming to `inputSampleCount`, frame number passthrough |
+| `FusionStageTest` | End-to-end event lifecycle — event creation, temporal refresh, urgency sort, profile application (checkAll, priority filtering, CRITICAL auto-promotion) |
+| `YamnetConsolidationMapTest` | Noisy-OR consolidation math — single/empty groups, top-k limiting, compounding vs max-pool, output clamping, size validation |
+| `StubSoundClassifierTest` | Stub classifier branches — silence/ambient/loud thresholds, confidence ordering |
+| `UrgencyTest` | Urgency enum — ordinal ordering, tint alpha, color differentiation |
+| `DevicePositionTest` | Spatial conversion — ILD noise floor, degree mapping, lag confidence threshold, pair selection |
+| `EventTrackerTest` | Rolling event tracker — confidence threshold, stale eviction, refresh, substring matching, urgency overrides, multi-label independent tracking |
 
 ---
 
