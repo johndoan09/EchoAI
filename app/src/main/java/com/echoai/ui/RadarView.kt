@@ -41,12 +41,21 @@ class RadarView @JvmOverloads constructor(
     private var events: List<SoundEvent> = emptyList()
     private var listening: Boolean = false
 
-    // Belief distribution from rotational-aperture localization. World-frame angles in
-    // bins of (360 / size) degrees. phoneYawDegrees rotates the world-frame display into
-    // device-frame: a fixed source stays anchored on the radar as the phone rotates.
-    private var belief: FloatArray = FloatArray(0)
+    // One halo per active YAMNet label. Each halo carries its own bin probabilities
+    // (world-frame angles in bins of 360 / snapshot.size degrees), world-frame peak
+    // angle, and the urgency color of the corresponding SoundEvent for tinting.
+    // phoneYawDegrees rotates the world-frame display into device-frame so a fixed
+    // source stays anchored on the radar as the phone rotates.
+    data class LabelHalo(
+        val label: String,
+        val snapshot: FloatArray,
+        val peakWorldAngle: Float,
+        val urgencyColor: Int,
+    )
+
+    private var halos: List<LabelHalo> = emptyList()
+    private var halosByLabel: Map<String, LabelHalo> = emptyMap()
     private var phoneYawDegrees: Float = 0f
-    private var peakWorldAngle: Float = 0f
     private val beliefArcRect = RectF()
     private val arrowPath = Path()
 
@@ -73,7 +82,6 @@ class RadarView @JvmOverloads constructor(
     private val pipFillPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.FILL }
     private val pipInnerPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.FILL }
     private val eventHaloPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.FILL }
-    private val eventDotPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.FILL }
     private val chipPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.FILL }
     private val chipTextPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         textSize = sp(10f)
@@ -87,7 +95,6 @@ class RadarView @JvmOverloads constructor(
     }
     private val beliefPeakPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         style = Paint.Style.FILL
-        color = 0xFFFFB347.toInt()
     }
 
     private var sweepDeg: Float = 0f
@@ -131,34 +138,22 @@ class RadarView @JvmOverloads constructor(
     }
 
     /**
-     * Update belief halo. [belief] is bin probabilities (length determines bin size in
-     * degrees). [phoneYawDegrees] is the phone's current world-frame heading; passing it
-     * lets the radar rotate world-frame angles into device frame so dots stay anchored
-     * to the world as the phone rotates. [peakWorldAngle] is the smoothed peak direction
-     * (world-frame degrees) used for the peak marker dot.
-     */
-    fun setBelief(belief: FloatArray, phoneYawDegrees: Float, peakWorldAngle: Float = 0f) {
-        this.belief = belief
-        this.phoneYawDegrees = phoneYawDegrees
-        this.peakWorldAngle = peakWorldAngle
-        invalidate()
-    }
-
-    /**
-     * Combined setter: events + belief + yaw + peak in a single update with one
+     * Combined setter: events + per-label halos + yaw in a single update with one
      * [invalidate]. Used by the live pipeline path to avoid two consecutive layouts
-     * per audio window.
+     * per audio window. Each [LabelHalo] carries its own world-frame bin distribution,
+     * smoothed peak, and tint color (the corresponding event's urgency color). The
+     * radar rotates world-frame angles into device frame via [phoneYawDegrees] so
+     * halos stay anchored to the world as the phone rotates.
      */
     fun setData(
         events: List<SoundEvent>,
-        belief: FloatArray,
+        halos: List<LabelHalo>,
         phoneYawDegrees: Float,
-        peakWorldAngle: Float,
     ) {
         this.events = events
-        this.belief = belief
+        this.halos = halos
+        this.halosByLabel = halos.associateBy { it.label }
         this.phoneYawDegrees = phoneYawDegrees
-        this.peakWorldAngle = peakWorldAngle
         invalidate()
     }
 
@@ -253,12 +248,27 @@ class RadarView @JvmOverloads constructor(
         if (!listening || events.isEmpty()) return
 
         events.take(MAX_VISIBLE_EVENTS).forEachIndexed { index, event ->
-            // The hardware's only usable directional signal is the within-pair ILD, which
-            // empirically captures the phone's *long axis* (TOP↔BOT). The X axis (L↔R)
-            // has no usable hardware baseline (top mics are 2 mm apart), so dots are held
-            // at center and lateral source direction is recovered via the IMU halo.
-            val xNorm = 0f
-            val yNorm = (event.devicePosition.bottomIld * Y_SENSITIVITY).coerceIn(-1f, 1f)
+            // Prefer full 2D placement from this label's belief peak (world-frame,
+            // rotated into device frame via phoneYawDegrees). Falls back to the legacy
+            // Y-only placement from bottomIld when the belief is still flat — gives
+            // sensible dot positions in the first ~second before the IMU sweep has
+            // accumulated enough evidence.
+            val halo = halosByLabel[event.label]
+            val haloSharp = halo != null &&
+                halo.snapshot.isNotEmpty() &&
+                halo.snapshot.max() > (1f / halo.snapshot.size) * HALO_SHARP_THRESHOLD
+
+            val xNorm: Float
+            val yNorm: Float
+            if (haloSharp) {
+                val deviceAngle = halo!!.peakWorldAngle - phoneYawDegrees
+                val rad = Math.toRadians((deviceAngle - 90f).toDouble())
+                xNorm = EVENT_RADIUS_NORM * kotlin.math.cos(rad).toFloat()
+                yNorm = EVENT_RADIUS_NORM * kotlin.math.sin(rad).toFloat()
+            } else {
+                xNorm = 0f
+                yNorm = (event.devicePosition.bottomIld * Y_SENSITIVITY).coerceIn(-1f, 1f)
+            }
             // Slight per-event vertical jitter so multiple events don't perfectly overlap.
             val stagger = ((index % 2) * 2 - 1) * (index / 2) * 0.08f
             val x = cx + xNorm * maxRadius * 0.82f
@@ -269,9 +279,6 @@ class RadarView @JvmOverloads constructor(
             eventHaloPaint.color = color
             eventHaloPaint.alpha = 38
             canvas.drawCircle(x, y, dp(10f), eventHaloPaint)
-            eventDotPaint.color = color
-            eventDotPaint.alpha = 255
-            canvas.drawCircle(x, y, dp(5.6f), eventDotPaint)
 
             val label = event.label.take(18)
             val chipWidth = (chipTextPaint.measureText(label) + dp(16f)).coerceAtLeast(dp(42f))
@@ -294,27 +301,35 @@ class RadarView @JvmOverloads constructor(
     }
 
     /**
-     * Draw the belief halo: an arc segment per bin colored by belief intensity, plus a
-     * brighter peak marker at the smoothed peak angle. Each bin's *world-frame* angle is
-     * rotated by `-phoneYawDegrees` so it lands at the correct *device-frame* position on
-     * the radar — i.e., as the phone rotates, the halo stays anchored to the world.
+     * Draw one belief halo per active label. Each halo is an arc segment per bin
+     * (intensity-modulated alpha) plus a peak-marker arrow, both tinted with the
+     * corresponding SoundEvent's urgency color. World-frame angles are rotated by
+     * `-phoneYawDegrees` so the halos stay anchored to the world as the phone turns.
      */
     private fun drawBeliefHalo(canvas: Canvas, cx: Float, cy: Float, r: Float) {
-        val n = belief.size
-        if (n == 0) return
+        if (halos.isEmpty()) return
         val haloRadius = r * 0.95f
         beliefArcRect.set(cx - haloRadius, cy - haloRadius, cx + haloRadius, cy + haloRadius)
+        halos.forEach { drawOneHalo(canvas, cx, cy, haloRadius, it) }
+    }
+
+    private fun drawOneHalo(canvas: Canvas, cx: Float, cy: Float, haloRadius: Float, halo: LabelHalo) {
+        val snapshot = halo.snapshot
+        val n = snapshot.size
+        if (n == 0) return
         val binSweepDeg = 360f / n
 
         var peakBelief = 0f
-        for (i in belief.indices) {
-            if (belief[i] > peakBelief) peakBelief = belief[i]
-        }
+        for (v in snapshot) if (v > peakBelief) peakBelief = v
         val uniform = 1f / n
-        if (peakBelief <= uniform * 1.05f) return
+        // Share the "is this belief sharp enough to trust?" gate with drawEventDots so a
+        // halo only renders once its peak is trustworthy — otherwise the arrow would
+        // point at whatever bin wiggled above uniform, which drifts with decay noise.
+        if (peakBelief <= uniform * HALO_SHARP_THRESHOLD) return
 
-        for (i in belief.indices) {
-            val b = belief[i]
+        val rgb = halo.urgencyColor and 0x00FFFFFF
+        for (i in snapshot.indices) {
+            val b = snapshot[i]
             if (b <= uniform) continue
             val intensity = ((b - uniform) / (peakBelief - uniform)).coerceIn(0f, 1f)
             if (intensity < 0.05f) continue
@@ -324,13 +339,12 @@ class RadarView @JvmOverloads constructor(
             val canvasStart = deviceAngle - 90f - binSweepDeg / 2f
 
             val alpha = (intensity * 220f).toInt().coerceIn(0, 255)
-            beliefArcPaint.color = (alpha shl 24) or 0x00FFB347
+            beliefArcPaint.color = (alpha shl 24) or rgb
             canvas.drawArc(beliefArcRect, canvasStart, binSweepDeg, false, beliefArcPaint)
         }
 
-        // Peak marker: a radial triangular arrow pointing outward from the user toward
-        // the world-frame source direction (rotated into device frame).
-        val peakDeviceAngle = peakWorldAngle - phoneYawDegrees
+        // Peak marker arrow at this label's world-frame peak, tinted to match.
+        val peakDeviceAngle = halo.peakWorldAngle - phoneYawDegrees
         val peakRad = Math.toRadians((peakDeviceAngle - 90f).toDouble())
         val cosA = kotlin.math.cos(peakRad).toFloat()
         val sinA = kotlin.math.sin(peakRad).toFloat()
@@ -348,6 +362,7 @@ class RadarView @JvmOverloads constructor(
         arrowPath.lineTo(baseCx + halfWidth * perpX, baseCy + halfWidth * perpY)
         arrowPath.lineTo(baseCx - halfWidth * perpX, baseCy - halfWidth * perpY)
         arrowPath.close()
+        beliefPeakPaint.color = 0xFF000000.toInt() or rgb
         canvas.drawPath(arrowPath, beliefPeakPaint)
     }
 
@@ -374,31 +389,42 @@ class RadarView @JvmOverloads constructor(
         return d
     }
 
-    private fun urgencyColor(urgency: Urgency): Int = when (urgency) {
-        Urgency.CRITICAL -> Color.rgb(214, 58, 47)
-        Urgency.HIGH -> Color.rgb(212, 112, 10)
-        Urgency.MEDIUM -> Color.rgb(168, 136, 10)
-        Urgency.LOW -> Color.rgb(42, 127, 196)
-    }
-
-    private fun urgencyTextColor(urgency: Urgency): Int = when (urgency) {
-        Urgency.CRITICAL -> Color.rgb(184, 46, 36)
-        Urgency.HIGH -> Color.rgb(184, 92, 0)
-        Urgency.MEDIUM -> Color.rgb(135, 108, 8)
-        Urgency.LOW -> Color.rgb(31, 101, 160)
-    }
-
     private fun dp(value: Float): Float = value * resources.displayMetrics.density
     private fun sp(value: Float): Float = value * resources.displayMetrics.scaledDensity
 
     companion object {
+        fun urgencyColor(urgency: Urgency): Int = when (urgency) {
+            Urgency.CRITICAL -> Color.rgb(214, 58, 47)
+            Urgency.HIGH -> Color.rgb(212, 112, 10)
+            Urgency.MEDIUM -> Color.rgb(168, 136, 10)
+            Urgency.LOW -> Color.rgb(42, 127, 196)
+        }
+
+        fun urgencyTextColor(urgency: Urgency): Int = when (urgency) {
+            Urgency.CRITICAL -> Color.rgb(184, 46, 36)
+            Urgency.HIGH -> Color.rgb(184, 92, 0)
+            Urgency.MEDIUM -> Color.rgb(135, 108, 8)
+            Urgency.LOW -> Color.rgb(31, 101, 160)
+        }
+
         private const val SWEEP_PERIOD_MS = 3000L
         private const val MAX_VISIBLE_EVENTS = 4
 
         /** Amplifier on `bot_ild` before clamping for the Y axis. CSV shows confident
          *  detections with bot_ild ~±0.6, so 1.5× lets typical sources reach ~±0.9 on the
-         *  radar without saturating. */
+         *  radar without saturating. Only used for the bottomIld fallback when a label's
+         *  belief is still flat (rotation hasn't accumulated enough evidence yet). */
         private const val Y_SENSITIVITY = 1.5f
+
+        /** Once `maxBelief > uniform * THRESHOLD`, trust the belief peak enough to place
+         *  the event dot at its world-frame direction rather than the legacy Y-only
+         *  bottomIld fallback. Slightly below the halo-render threshold so any halo that's
+         *  visible also drives 2D dot placement. */
+        private const val HALO_SHARP_THRESHOLD = 1.5f
+
+        /** Radius (fraction of maxRadius) at which belief-driven event dots land. Keeps
+         *  the dot clear of the center pip and inside the halo ring. */
+        private const val EVENT_RADIUS_NORM = 0.7f
 
         /** Minimum yaw change (degrees) before the choreographer-driven refresh issues
          *  a redraw. Prevents continuous invalidates while the phone is stationary. */
