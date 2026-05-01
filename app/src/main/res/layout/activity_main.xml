@@ -26,11 +26,10 @@
             android:orientation="horizontal">
 
             <ImageView
-                android:layout_width="32dp"
-                android:layout_height="32dp"
+                android:layout_width="40dp"
+                android:layout_height="40dp"
                 android:layout_gravity="center_vertical"
-                android:scaleType="centerInside"
-                android:adjustViewBounds="true"
+                android:scaleType="centerCrop"
                 android:contentDescription="@null"
                 android:src="@drawable/ic_echo_logo" />
 
@@ -38,6 +37,7 @@
                 android:id="@+id/wordmark"
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
+                android:layout_gravity="center_vertical"
                 android:layout_marginStart="8dp"
                 android:fontFamily="sans-serif-black"
                 android:letterSpacing="-0.03"
@@ -245,13 +245,11 @@
 
             <ImageView
                 android:id="@+id/tabListeningIcon"
-                android:layout_width="26dp"
-                android:layout_height="26dp"
-                android:layout_gravity="center_vertical"
-                android:scaleType="centerInside"
-                android:adjustViewBounds="true"
+                android:layout_width="22dp"
+                android:layout_height="22dp"
                 android:contentDescription="@null"
-                android:src="@drawable/ic_echo_logo" />
+                android:src="@drawable/ic_headphones"
+                app:tint="@color/accent" />
 
             <TextView
                 android:id="@+id/tabListeningLabel"
