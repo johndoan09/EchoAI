@@ -33,27 +33,35 @@ class DiagnosticsLogger private constructor(
     fun log(
         window: AudioWindow,
         topLabel: LabeledScore?,
-        rmsBl: Float, rmsBr: Float, rmsKl: Float, rmsKr: Float,
         full: LocalizationResult,
         sub: LocalizationResult,
-        azimuthDeg: Float?,
+        azimuthIldDeg: Float?,
+        azimuthLagDeg: Float?,
+        phoneYawDeg: Float?,
+        beliefPeakDeg: Float?,
+        beliefIntensity: Float?,
     ) {
         val cols = listOf(
             window.frameNumber.toString(),
             window.captureTimestampNanos.toString(),
             (topLabel?.label ?: "").csvEscape(),
             "%.4f".format(topLabel?.confidence ?: 0f),
-            "%.1f".format(rmsBl), "%.1f".format(rmsBr),
-            "%.1f".format(rmsKl), "%.1f".format(rmsKr),
+            "%.1f".format(full.bottomLeftRms), "%.1f".format(full.bottomRightRms),
+            "%.1f".format(full.backLeftRms), "%.1f".format(full.backRightRms),
             "%.1f".format(full.bottomRms), "%.1f".format(full.backRms),
             "%.4f".format(full.frontBackBias),
+            "%.4f".format(full.bottomIld), "%.4f".format(full.backIld),
             full.crossPairLag.samples.toString(), "%.3f".format(full.crossPairLag.confidence),
             full.withinPairBottom.samples.toString(), "%.3f".format(full.withinPairBottom.confidence),
             full.withinPairBack.samples.toString(), "%.3f".format(full.withinPairBack.confidence),
             sub.crossPairLag.samples.toString(), "%.3f".format(sub.crossPairLag.confidence),
             sub.withinPairBottom.samples.toString(), "%.3f".format(sub.withinPairBottom.confidence),
             sub.withinPairBack.samples.toString(), "%.3f".format(sub.withinPairBack.confidence),
-            azimuthDeg?.let { "%.2f".format(it) } ?: "",
+            azimuthIldDeg?.let { "%.2f".format(it) } ?: "",
+            azimuthLagDeg?.let { "%.2f".format(it) } ?: "",
+            phoneYawDeg?.let { "%.2f".format(it) } ?: "",
+            beliefPeakDeg?.let { "%.2f".format(it) } ?: "",
+            beliefIntensity?.let { "%.4f".format(it) } ?: "",
         )
         writer.println(cols.joinToString(","))
     }
@@ -75,9 +83,10 @@ class DiagnosticsLogger private constructor(
             "frame,capture_ts_ns,top_label,top_conf," +
                 "bot_l_rms,bot_r_rms,bk_l_rms,bk_r_rms," +
                 "bot_mono_rms,bk_mono_rms,fb_bias," +
+                "bot_ild,bk_ild," +
                 "cross_lag_1s,cross_conf_1s,bot_lag_1s,bot_conf_1s,bk_lag_1s,bk_conf_1s," +
                 "cross_lag_250,cross_conf_250,bot_lag_250,bot_conf_250,bk_lag_250,bk_conf_250," +
-                "azimuth_deg"
+                "azimuth_ild_deg,azimuth_lag_deg,phone_yaw_deg,belief_peak_deg,belief_intensity"
 
         fun start(context: Context): DiagnosticsLogger {
             val dir = context.getExternalFilesDir(null) ?: context.filesDir

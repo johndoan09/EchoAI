@@ -29,6 +29,8 @@ class EventTracker(
 
         val devicePos = DevicePosition(
             frontBackBias = localization.frontBackBias,
+            bottomIld = localization.bottomIld,
+            backIld = localization.backIld,
             crossPairLag = localization.crossPairLag,
             withinPairBottom = localization.withinPairBottom,
             withinPairBack = localization.withinPairBack,

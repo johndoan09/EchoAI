@@ -3,6 +3,7 @@
     <string name="app_tagline">Stereo mic capability test</string>
     <string name="start_live">Start live capture</string>
     <string name="stop_live">Stop live capture</string>
+    <string name="reset_belief">Reset</string>
     <string name="live_starting">Starting capture…</string>
     <string name="live_idle">Live capture is stopped. Tap Start to begin.</string>
     <string name="run_stereo_test">Record 2 s of stereo audio</string>

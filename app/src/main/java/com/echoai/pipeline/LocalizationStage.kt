@@ -63,10 +63,20 @@ class LocalizationStage(
         val bottomMono = mix(bL, bR)
         val backMono = mix(kL, kR)
 
+        // Per-channel RMS (for ILD) and per-pair mono RMS (for front/back bias).
+        val bLRms = rms(bL)
+        val bRRms = rms(bR)
+        val kLRms = rms(kL)
+        val kRRms = rms(kR)
         val bottomRms = rms(bottomMono)
         val backRms = rms(backMono)
+
         val total = bottomRms + backRms
         val frontBackBias = if (total > 1e-6f) (bottomRms - backRms) / total else 0f
+
+        // ILD = (R - L) / (R + L), positive = source closer to the right channel.
+        val bottomIld = ildOf(bLRms, bRRms)
+        val backIld = ildOf(kLRms, kRRms)
 
         val crossPair = localizer.localize(bottomMono, backMono, MAX_LAG_CROSS).toLagSample()
         val withinBottom = localizer.localize(bL, bR, MAX_LAG_WITHIN).toLagSample()
@@ -76,14 +86,25 @@ class LocalizationStage(
             frameNumber = window.frameNumber,
             captureTimestampNanos = window.captureTimestampNanos,
             sampleRate = window.sampleRate,
+            bottomLeftRms = bLRms,
+            bottomRightRms = bRRms,
+            backLeftRms = kLRms,
+            backRightRms = kRRms,
             bottomRms = bottomRms,
             backRms = backRms,
             frontBackBias = frontBackBias,
+            bottomIld = bottomIld,
+            backIld = backIld,
             crossPairLag = crossPair,
             withinPairBottom = withinBottom,
             withinPairBack = withinBack,
             worldOrientation = window.worldOrientation,
         )
+    }
+
+    private fun ildOf(lRms: Float, rRms: Float): Float {
+        val sum = lRms + rRms
+        return if (sum > 1e-6f) (rRms - lRms) / sum else 0f
     }
 
     private fun mix(l: ShortArray, r: ShortArray): ShortArray {
