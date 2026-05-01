@@ -36,5 +36,5 @@
     <string name="keep_editing">Keep Editing</string>
     <string name="unsaved_changes_title">Unsaved Changes</string>
     <string name="unsaved_changes_message">You have unsaved changes to your sound selection. Discard them?</string>
+    <string name="rotate_hint">Rotate phone to update location readings</string>
 </resources>
-

@@ -26,6 +26,9 @@ import com.echoai.R
 import com.echoai.audio.AudioCaptureManager
 import com.echoai.audio.AudioWindow
 import com.echoai.databinding.ActivityMainBinding
+import com.echoai.diagnostics.DiagnosticsLogger
+import com.echoai.domain.BeliefDistribution
+import com.echoai.domain.ClassificationResult
 import com.echoai.domain.EventTracker
 import com.echoai.domain.PinnedAlertTracker
 import com.echoai.domain.ProfileManager
@@ -39,6 +42,7 @@ import com.echoai.ml.YamnetClassifier
 import com.echoai.pipeline.ClassificationStage
 import com.echoai.pipeline.FusionStage
 import com.echoai.pipeline.LocalizationStage
+import com.echoai.sensor.RotationVectorProvider
 import com.echoai.util.HapticManager
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -52,6 +56,7 @@ class MainActivity : AppCompatActivity() {
 
     private lateinit var binding: ActivityMainBinding
     private lateinit var pinnedAdapter: PinnedAlertAdapter
+    private lateinit var sceneChipAdapter: SceneChipAdapter
 
     private var pendingStart = false
     private val requestMic = registerForActivityResult(
@@ -62,7 +67,12 @@ class MainActivity : AppCompatActivity() {
         pendingStart = false
     }
 
-    private val captureManager by lazy { AudioCaptureManager(applicationContext) }
+    // --- Pipeline (localization + IMU stack from imu-bayesian-belief, profile-aware fusion from main) ---
+
+    private val orientationProvider by lazy { RotationVectorProvider(applicationContext) }
+    private val captureManager by lazy {
+        AudioCaptureManager(applicationContext, orientationProvider)
+    }
     private val classifier: SoundClassifier by lazy {
         YamnetClassifier.create(applicationContext) ?: StubSoundClassifier()
     }
@@ -77,11 +87,30 @@ class MainActivity : AppCompatActivity() {
     private val historyManager by lazy { SoundHistoryManager(applicationContext) }
     private val pinnedAlertTracker by lazy { PinnedAlertTracker(applicationContext) }
 
+    // BeliefDistribution is fed `bot_ild` (the strong within-pair ILD signal that captures
+    // long-axis source direction). Positive bot_ild = source toward BOTTOM of phone
+    // (deviceAngle ≈ 180°), so biasScale is negative so that cos(180°)*biasScale > 0.
+    // decayRate = 0.01 per update at 8 Hz ≈ 0.08/s effective decay.
+    private val belief = BeliefDistribution(
+        biasScale = -0.5f,
+        measurementSigma = 0.25f,
+        decayRate = 0.01f,
+    )
+
     private var pipelineJob: Job? = null
     private var liveActive = false
     private var pinnedSectionVisible = false
+    private var diagnosticsLogger: DiagnosticsLogger? = null
 
-    private lateinit var sceneChipAdapter: SceneChipAdapter
+    // Classification cache: at 8 Hz localization / 2 Hz classification, every 4th window
+    // runs YAMNet and the others reuse the most-recent classification result. The reused
+    // result is at most 3 hops (~375 ms) old — well within EventTracker.staleAfterNanos (3 s).
+    private var lastClassification: ClassificationResult? = null
+    private var classificationFrameCounter = 0
+
+    // Yaw history for rotation-rate tracking (recent samples, capped by time window).
+    private val yawHistory = ArrayDeque<Pair<Long, Float>>(24)
+    private var rotateHintFrames = 0
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -344,24 +373,42 @@ class MainActivity : AppCompatActivity() {
     private fun startLive() {
         if (liveActive) return
         liveActive = true
+
         binding.liveToggle.text = getString(R.string.stop_live)
         binding.liveToggle.setCompoundDrawablesRelativeWithIntrinsicBounds(
             R.drawable.ic_pause, 0, 0, 0
         )
         binding.statusText.text = getString(R.string.live_starting)
         binding.radarView.setListening(true)
+
+        diagnosticsLogger = DiagnosticsLogger.start(applicationContext)
+        belief.reset()
+        lastClassification = null
+        classificationFrameCounter = 0
+        yawHistory.clear()
+        rotateHintFrames = 0
+        orientationProvider.start()
+        binding.radarView.setOrientationProvider(orientationProvider)
+
         captureManager.start(lifecycleScope)
 
         pipelineJob = lifecycleScope.launch {
             repeatOnLifecycle(Lifecycle.State.STARTED) {
                 captureManager.windows.collectLatest { window ->
-                    val events = processWindow(window)
-                    binding.radarView.setEvents(events)
-                    hapticManager.vibrateForHighest(events)
-                    updateStatus(events)
-                    pinnedAlertTracker.onEvents(events)
+                    val frame = processWindow(window)
+                    binding.radarView.setData(
+                        events = frame.events,
+                        belief = frame.beliefSnapshot,
+                        phoneYawDegrees = frame.phoneYaw,
+                        peakWorldAngle = frame.beliefPeakAngle,
+                    )
+                    binding.rotateHint.visibility =
+                        if (frame.showRotateHint) View.VISIBLE else View.GONE
+                    hapticManager.vibrateForHighest(frame.events)
+                    updateStatus(frame.events)
+                    pinnedAlertTracker.onEvents(frame.events)
                     historyManager.logHighUrgencyEvents(
-                        events, profileManager.activeProfile.value.name
+                        frame.events, profileManager.activeProfile.value.name
                     )
                     withContext(Dispatchers.Main) { refreshPinnedSection() }
                 }
@@ -372,8 +419,13 @@ class MainActivity : AppCompatActivity() {
     private fun stopLive() {
         liveActive = false
         captureManager.stop()
+        binding.radarView.setOrientationProvider(null)
+        orientationProvider.stop()
+        diagnosticsLogger?.close()
+        diagnosticsLogger = null
         pipelineJob?.cancel()
         pipelineJob = null
+
         binding.liveToggle.text = getString(R.string.start_live)
         binding.liveToggle.setCompoundDrawablesRelativeWithIntrinsicBounds(
             R.drawable.ic_mic, 0, 0, 0
@@ -381,18 +433,121 @@ class MainActivity : AppCompatActivity() {
         binding.statusText.text = getString(R.string.live_idle)
         binding.radarView.setListening(false)
         binding.radarView.setEvents(emptyList())
+        binding.rotateHint.visibility = View.GONE
+
         val err = captureManager.lastErrorMessage()
         if (err != null) binding.statusText.text = "Stopped — error: $err"
     }
 
-    private suspend fun processWindow(window: AudioWindow): List<SoundEvent> = coroutineScope {
-        val classifyJob = async(Dispatchers.Default) { classificationStage.classify(window) }
+    private data class Frame(
+        val events: List<SoundEvent>,
+        val beliefSnapshot: FloatArray,
+        val phoneYaw: Float,
+        val beliefPeakAngle: Float,
+        val beliefIntensity: Float,
+        val showRotateHint: Boolean,
+    )
+
+    private suspend fun processWindow(window: AudioWindow): Frame = coroutineScope {
+        // YAMNet runs every Nth window; localization runs every window. Between
+        // classifications we reuse the cached result (the dominant source rarely
+        // changes within ~250 ms, so this is a safe assumption for stage-(a) attribution).
         val localizeJob = async(Dispatchers.Default) { localizationStage.localizeMultiScale(window) }
-        val classification = classifyJob.await()
-        val localization = localizeJob.await()
-        withContext(Dispatchers.Default) {
-            fusionStage.process(classification, localization.full)
+        val shouldClassify = (classificationFrameCounter % CLASSIFY_EVERY_N) == 0
+        classificationFrameCounter++
+        val classification = if (shouldClassify) {
+            val fresh = withContext(Dispatchers.Default) { classificationStage.classify(window) }
+            lastClassification = fresh
+            fresh
+        } else {
+            lastClassification ?: ClassificationResult(window.frameNumber, emptyList())
         }
+        val multi = localizeJob.await()
+        val events = withContext(Dispatchers.Default) {
+            fusionStage.process(classification, multi.full)
+        }
+        val devicePos = events.firstOrNull()?.devicePosition
+        val azX = devicePos?.azimuthFromBottomIld()
+        val azLag = devicePos?.azimuthFromLag()
+
+        // Rotational-aperture localizer update. Only feed the belief when (a) the IMU has
+        // produced a sample and (b) YAMNet detected a sound with reasonable confidence —
+        // updating during silence pushes phantom peaks toward the broadside cone.
+        // Use the 250 ms peak-energy sub-window's ILD: it changes more between consecutive
+        // emissions than the full-window ILD (consecutive 1 s windows share 87.5% of audio
+        // at 8 Hz, so their full-window ILDs are highly correlated).
+        val yaw = orientationProvider.yawDegrees()
+        // YAMNet has a literal "Silence" class (index 494) that dominates quiet windows
+        // with confidence ~0.95; the stub classifier emits the same label. Treat it as the
+        // absence of a real sound — scan topK for the first non-Silence label above the
+        // confidence floor instead of just looking at top-1.
+        val activeLabel = classification.topK.firstOrNull {
+            it.confidence > 0.3f && !it.label.equals(SILENCE_LABEL, ignoreCase = true)
+        }
+        val hasConfidentAudio = activeLabel != null
+        if (yaw != null && hasConfidentAudio) {
+            belief.update(multi.sub.bottomIld, yaw)
+        } else {
+            // Silence (or no IMU sample yet) — fade the belief faster toward uniform so a
+            // stale peak doesn't linger.
+            belief.decayOnly(SILENCE_DECAY_RATE)
+        }
+
+        val peakAngle = belief.argmaxDegrees()
+        val intensity = belief.maxBelief()
+
+        // Rotation hint: only nudges the user when there's an active sound but the phone
+        // isn't moving — without rotation the rotational-aperture localizer can't pin down
+        // a world-frame direction. Stays hidden during silence.
+        recordYaw(window.captureTimestampNanos, yaw)
+        val lowRotation = cumulativeRotationDegrees() < LOW_ROTATION_DEG
+        if (hasConfidentAudio && lowRotation) rotateHintFrames++ else rotateHintFrames = 0
+        val showRotateHint = rotateHintFrames >= ROTATE_HINT_DEBOUNCE_FRAMES
+
+        diagnosticsLogger?.log(
+            window = window,
+            topLabel = classification.topK.firstOrNull(),
+            full = multi.full,
+            sub = multi.sub,
+            azimuthIldDeg = azX,
+            azimuthLagDeg = azLag,
+            phoneYawDeg = yaw,
+            beliefPeakDeg = peakAngle,
+            beliefIntensity = intensity,
+        )
+
+        Frame(
+            events = events,
+            beliefSnapshot = belief.snapshot(),
+            phoneYaw = yaw ?: 0f,
+            beliefPeakAngle = peakAngle,
+            beliefIntensity = intensity,
+            showRotateHint = showRotateHint,
+        )
+    }
+
+    private fun recordYaw(timestampNanos: Long, yawDeg: Float?) {
+        if (yawDeg == null) return
+        yawHistory.addLast(timestampNanos to yawDeg)
+        val cutoff = timestampNanos - YAW_WINDOW_NANOS
+        while (yawHistory.isNotEmpty() && yawHistory.first().first < cutoff) yawHistory.removeFirst()
+    }
+
+    /** Sum of absolute yaw deltas across the retained history, with shortest-arc wrapping. */
+    private fun cumulativeRotationDegrees(): Float {
+        if (yawHistory.size < 2) return 0f
+        var total = 0f
+        val iter = yawHistory.iterator()
+        var prev = iter.next().second
+        while (iter.hasNext()) {
+            val cur = iter.next().second
+            var d = cur - prev
+            if (d > 180f) d -= 360f
+            if (d < -180f) d += 360f
+            total += kotlin.math.abs(d)
+            prev = cur
+        }
+        return total
     }
 
     private fun updateStatus(events: List<SoundEvent>) {
@@ -403,5 +558,21 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    private fun dp(v: Int): Int = (v * resources.displayMetrics.density).toInt()
+    companion object {
+        /** Run YAMNet on every Nth pipeline window. With HOP_FRAMES = 2000 (8 Hz), N=4
+         *  gives 2 Hz classification while localization + belief update runs at full 8 Hz. */
+        private const val CLASSIFY_EVERY_N = 4
+        /** Decay rate applied per silent window. 10× the normal 0.01 in BeliefDistribution
+         *  → ~57%/s convergence to uniform at 8 Hz, so the halo fades within ~2 s of silence. */
+        private const val SILENCE_DECAY_RATE = 0.10f
+        /** YAMNet class 494 / stub classifier label that means "no sound to localize". */
+        private const val SILENCE_LABEL = "Silence"
+        /** Sliding window over which cumulative yaw change is summed for the rotate hint. */
+        private const val YAW_WINDOW_NANOS = 2_000_000_000L
+        /** Below this cumulative rotation over [YAW_WINDOW_NANOS], the phone counts as "still". */
+        private const val LOW_ROTATION_DEG = 15f
+        /** Consecutive frames the (audio + still) condition must hold before showing the hint
+         *  (~1.5 s at 8 Hz). Hides immediately when either condition flips. */
+        private const val ROTATE_HINT_DEBOUNCE_FRAMES = 12
+    }
 }

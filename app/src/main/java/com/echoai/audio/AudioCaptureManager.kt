@@ -272,7 +272,7 @@ class AudioCaptureManager(
     companion object {
         const val SAMPLE_RATE = 16_000
         const val WINDOW_FRAMES = 16_000     // 1 s
-        const val HOP_FRAMES = 8_000         // 50% overlap → emit every 500 ms
+        const val HOP_FRAMES = 2_000         // 87.5% overlap → emit every 125 ms (8 Hz)
         const val WARMUP_FRAMES = 3_200      // ~200 ms HAL warmup discard
 
         private const val CHANNELS_PER_REC = 2

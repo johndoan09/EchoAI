@@ -5,29 +5,32 @@ import android.content.Context
 import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.Paint
+import android.graphics.Path
 import android.graphics.RectF
 import android.util.AttributeSet
+import android.view.Choreographer
 import android.view.View
 import android.view.animation.LinearInterpolator
 import androidx.core.content.ContextCompat
 import com.echoai.R
 import com.echoai.domain.SoundEvent
 import com.echoai.domain.Urgency
-import kotlin.math.cos
+import com.echoai.sensor.WorldOrientationProvider
+import kotlin.math.abs
 import kotlin.math.min
-import kotlin.math.sin
 
 /**
- * 2-D device-frame radar — **placeholder**.
+ * 2-D device-frame radar combining the design-handoff chrome with the rotational-aperture
+ * belief halo from the imu-bayesian-belief branch.
  *
- * Visual structure follows the design handoff:
- *   - 4 concentric circular rings (25 / 50 / 75 / 100 % of the available radius)
- *   - vertical + horizontal axis lines
- *   - FRONT / REAR / L / R directional labels
- *   - center pip (dark circle + white inner dot)
- *   - rotating sweep + 3 staggered pulse rings while listening
- *
- * SoundEvent locations are plotted using device-frame azimuth + front/back bias.
+ * Visual structure:
+ *   - 4 concentric circular rings + axis lines + FRONT/REAR/L/R labels (design handoff)
+ *   - rotating sweep + 3 staggered pulse rings while listening (design handoff)
+ *   - belief halo arc segments + peak arrow around the perimeter, world-frame anchored
+ *     via the IMU yaw so a fixed source stays put as the phone rotates
+ *   - per-event dots positioned along the long axis only (Y = bottomIld, X = center).
+ *     The phone's mic geometry has no usable short-axis baseline; lateral direction is
+ *     recovered through the IMU rotational halo, not from per-window per-event geometry.
  */
 class RadarView @JvmOverloads constructor(
     context: Context,
@@ -36,8 +39,16 @@ class RadarView @JvmOverloads constructor(
 ) : View(context, attrs, defStyleAttr) {
 
     private var events: List<SoundEvent> = emptyList()
-
     private var listening: Boolean = false
+
+    // Belief distribution from rotational-aperture localization. World-frame angles in
+    // bins of (360 / size) degrees. phoneYawDegrees rotates the world-frame display into
+    // device-frame: a fixed source stays anchored on the radar as the phone rotates.
+    private var belief: FloatArray = FloatArray(0)
+    private var phoneYawDegrees: Float = 0f
+    private var peakWorldAngle: Float = 0f
+    private val beliefArcRect = RectF()
+    private val arrowPath = Path()
 
     private val ringPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         style = Paint.Style.STROKE
@@ -73,6 +84,15 @@ class RadarView @JvmOverloads constructor(
         isFakeBoldText = true
         textAlign = Paint.Align.CENTER
     }
+    private val beliefArcPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        style = Paint.Style.STROKE
+        strokeWidth = dp(11f)
+        strokeCap = Paint.Cap.BUTT
+    }
+    private val beliefPeakPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        style = Paint.Style.FILL
+        color = 0xFFFFB347.toInt()
+    }
 
     private var sweepDeg: Float = 0f
     private var pulseProgress: Float = 0f
@@ -96,6 +116,21 @@ class RadarView @JvmOverloads constructor(
         }
     }
 
+    private var orientationProvider: WorldOrientationProvider? = null
+    private var yawRefreshScheduled = false
+    private val yawCallback = object : Choreographer.FrameCallback {
+        override fun doFrame(frameTimeNanos: Long) {
+            yawRefreshScheduled = false
+            val provider = orientationProvider ?: return
+            val newYaw = provider.yawDegrees() ?: phoneYawDegrees
+            if (abs(angularDelta(newYaw, phoneYawDegrees)) > YAW_INVALIDATE_THRESHOLD_DEG) {
+                phoneYawDegrees = newYaw
+                invalidate()
+            }
+            scheduleYawRefresh()
+        }
+    }
+
     init {
         ringPaint.color = ContextCompat.getColor(context, R.color.radar_ring_idle)
         axisPaint.color = ContextCompat.getColor(context, R.color.radar_axis)
@@ -106,11 +141,58 @@ class RadarView @JvmOverloads constructor(
         pipInnerPaint.color = ContextCompat.getColor(context, R.color.surface)
     }
 
-    /** Wiring point for the localization team — kept on the API surface so the
-     *  rest of the pipeline doesn't need to change when real plotting lands. */
     fun setEvents(events: List<SoundEvent>) {
         this.events = events
         invalidate()
+    }
+
+    /**
+     * Update belief halo. [belief] is bin probabilities (length determines bin size in
+     * degrees). [phoneYawDegrees] is the phone's current world-frame heading; passing it
+     * lets the radar rotate world-frame angles into device frame so dots stay anchored
+     * to the world as the phone rotates. [peakWorldAngle] is the smoothed peak direction
+     * (world-frame degrees) used for the peak marker dot.
+     */
+    fun setBelief(belief: FloatArray, phoneYawDegrees: Float, peakWorldAngle: Float = 0f) {
+        this.belief = belief
+        this.phoneYawDegrees = phoneYawDegrees
+        this.peakWorldAngle = peakWorldAngle
+        invalidate()
+    }
+
+    /**
+     * Combined setter: events + belief + yaw + peak in a single update with one
+     * [invalidate]. Used by the live pipeline path to avoid two consecutive layouts
+     * per audio window.
+     */
+    fun setData(
+        events: List<SoundEvent>,
+        belief: FloatArray,
+        phoneYawDegrees: Float,
+        peakWorldAngle: Float,
+    ) {
+        this.events = events
+        this.belief = belief
+        this.phoneYawDegrees = phoneYawDegrees
+        this.peakWorldAngle = peakWorldAngle
+        invalidate()
+    }
+
+    /**
+     * Wire an [WorldOrientationProvider] to drive the halo rotation at display rate
+     * (~60 fps) instead of the audio pipeline rate. Call with `null` to stop the
+     * continuous refresh (e.g., when capture stops). Between audio-pipeline frames the
+     * belief / events / peak stay frozen; only the world-to-device-frame rotation is
+     * refreshed, so the halo and peak marker stay anchored to the world as the phone
+     * rotates.
+     */
+    fun setOrientationProvider(provider: WorldOrientationProvider?) {
+        orientationProvider = provider
+        if (provider != null && isAttachedToWindow) {
+            startYawRefresh()
+        } else {
+            stopYawRefresh()
+        }
     }
 
     fun setListening(active: Boolean) {
@@ -132,10 +214,16 @@ class RadarView @JvmOverloads constructor(
         invalidate()
     }
 
+    override fun onAttachedToWindow() {
+        super.onAttachedToWindow()
+        if (orientationProvider != null) startYawRefresh()
+    }
+
     override fun onDetachedFromWindow() {
-        super.onDetachedFromWindow()
         sweepAnimator.cancel()
         pulseAnimator.cancel()
+        stopYawRefresh()
+        super.onDetachedFromWindow()
     }
 
     override fun onDraw(canvas: Canvas) {
@@ -148,16 +236,13 @@ class RadarView @JvmOverloads constructor(
         val maxRadius = min((width / 2f) - labelInset, (height / 2f) - labelInset)
         if (maxRadius <= 0f) return
 
-        // Circular rings
         for (frac in floatArrayOf(0.25f, 0.5f, 0.75f, 1f)) {
             canvas.drawCircle(cx, cy, maxRadius * frac, ringPaint)
         }
 
-        // Axes
         canvas.drawLine(cx, cy - maxRadius, cx, cy + maxRadius, axisPaint)
         canvas.drawLine(cx - maxRadius, cy, cx + maxRadius, cy, axisPaint)
 
-        // Direction labels
         val baseline = labelPaint.fontMetrics
         val textOffset = (-(baseline.ascent + baseline.descent)) / 2f
         canvas.drawText("FRONT", cx, cy - maxRadius - dp(8f), labelPaint)
@@ -168,8 +253,10 @@ class RadarView @JvmOverloads constructor(
         sideLabelPaint.textAlign = Paint.Align.RIGHT
         canvas.drawText("R", width - dp(2f), cy + textOffset, sideLabelPaint)
 
+        // Belief halo sits behind the sweep / event dots so interactive elements remain on top.
+        drawBeliefHalo(canvas, cx, cy, maxRadius)
+
         if (listening) {
-            // Pulse rings — 3 staggered animations expanding to the full radar boundary
             for (i in 0..2) {
                 val phase = ((pulseProgress + i / 3f) % 1f)
                 val r = lerp(dp(5f), maxRadius, phase)
@@ -178,7 +265,6 @@ class RadarView @JvmOverloads constructor(
                 canvas.drawCircle(cx, cy, r, pulsePaint)
             }
 
-            // Sweep line
             val sweepRad = Math.toRadians((sweepDeg - 90f).toDouble())
             val sx = cx + maxRadius * Math.cos(sweepRad).toFloat()
             val sy = cy + maxRadius * Math.sin(sweepRad).toFloat()
@@ -187,7 +273,6 @@ class RadarView @JvmOverloads constructor(
 
         drawEventDots(canvas, cx, cy, maxRadius)
 
-        // Center pip
         canvas.drawCircle(cx, cy, dp(5f), pipFillPaint)
         canvas.drawCircle(cx, cy, dp(2f), pipInnerPaint)
     }
@@ -196,13 +281,16 @@ class RadarView @JvmOverloads constructor(
         if (!listening || events.isEmpty()) return
 
         events.take(MAX_VISIBLE_EVENTS).forEachIndexed { index, event ->
-            val az = event.devicePosition.azimuthDegrees()
-            val angleDeg = az ?: fallbackAngleFor(index)
-            val frontBack = event.devicePosition.frontBackBias.coerceIn(-1f, 1f)
-            val radius = (0.38f + kotlin.math.abs(frontBack) * 0.42f + index * 0.08f).coerceIn(0.32f, 0.88f)
-            val rad = Math.toRadians((angleDeg - 90f).toDouble())
-            val x = cx + radius * maxRadius * cos(rad).toFloat()
-            val y = cy + radius * maxRadius * sin(rad).toFloat()
+            // The hardware's only usable directional signal is the within-pair ILD, which
+            // empirically captures the phone's *long axis* (TOP↔BOT). The X axis (L↔R)
+            // has no usable hardware baseline (top mics are 2 mm apart), so dots are held
+            // at center and lateral source direction is recovered via the IMU halo.
+            val xNorm = 0f
+            val yNorm = (event.devicePosition.bottomIld * Y_SENSITIVITY).coerceIn(-1f, 1f)
+            // Slight per-event vertical jitter so multiple events don't perfectly overlap.
+            val stagger = ((index % 2) * 2 - 1) * (index / 2) * 0.08f
+            val x = cx + xNorm * maxRadius * 0.82f
+            val y = cy + (yNorm + stagger).coerceIn(-1f, 1f) * maxRadius * 0.82f
             val color = urgencyColor(event.urgency)
             val textColor = urgencyTextColor(event.urgency)
 
@@ -228,16 +316,90 @@ class RadarView @JvmOverloads constructor(
             chipTextPaint.color = textColor
             chipTextPaint.alpha = 255
             val fm = chipTextPaint.fontMetrics
-            val baseline = rect.centerY() - (fm.ascent + fm.descent) / 2f
-            canvas.drawText(label, rect.centerX(), baseline, chipTextPaint)
+            val textBaseline = rect.centerY() - (fm.ascent + fm.descent) / 2f
+            canvas.drawText(label, rect.centerX(), textBaseline, chipTextPaint)
         }
     }
 
-    private fun fallbackAngleFor(index: Int): Float = when (index % 4) {
-        0 -> 35f
-        1 -> 140f
-        2 -> 225f
-        else -> 315f
+    /**
+     * Draw the belief halo: an arc segment per bin colored by belief intensity, plus a
+     * brighter peak marker at the smoothed peak angle. Each bin's *world-frame* angle is
+     * rotated by `-phoneYawDegrees` so it lands at the correct *device-frame* position on
+     * the radar — i.e., as the phone rotates, the halo stays anchored to the world.
+     */
+    private fun drawBeliefHalo(canvas: Canvas, cx: Float, cy: Float, r: Float) {
+        val n = belief.size
+        if (n == 0) return
+        val haloRadius = r * 0.95f
+        beliefArcRect.set(cx - haloRadius, cy - haloRadius, cx + haloRadius, cy + haloRadius)
+        val binSweepDeg = 360f / n
+
+        var peakBelief = 0f
+        for (i in belief.indices) {
+            if (belief[i] > peakBelief) peakBelief = belief[i]
+        }
+        val uniform = 1f / n
+        if (peakBelief <= uniform * 1.05f) return
+
+        for (i in belief.indices) {
+            val b = belief[i]
+            if (b <= uniform) continue
+            val intensity = ((b - uniform) / (peakBelief - uniform)).coerceIn(0f, 1f)
+            if (intensity < 0.05f) continue
+
+            val worldAngle = i * binSweepDeg
+            val deviceAngle = worldAngle - phoneYawDegrees
+            val canvasStart = deviceAngle - 90f - binSweepDeg / 2f
+
+            val alpha = (intensity * 220f).toInt().coerceIn(0, 255)
+            beliefArcPaint.color = (alpha shl 24) or 0x00FFB347
+            canvas.drawArc(beliefArcRect, canvasStart, binSweepDeg, false, beliefArcPaint)
+        }
+
+        // Peak marker: a radial triangular arrow pointing outward from the user toward
+        // the world-frame source direction (rotated into device frame).
+        val peakDeviceAngle = peakWorldAngle - phoneYawDegrees
+        val peakRad = Math.toRadians((peakDeviceAngle - 90f).toDouble())
+        val cosA = kotlin.math.cos(peakRad).toFloat()
+        val sinA = kotlin.math.sin(peakRad).toFloat()
+        val tipR = haloRadius - dp(2f)
+        val baseR = haloRadius - dp(11f)
+        val halfWidth = dp(4f)
+        val tipX = cx + tipR * cosA
+        val tipY = cy + tipR * sinA
+        val baseCx = cx + baseR * cosA
+        val baseCy = cy + baseR * sinA
+        val perpX = -sinA
+        val perpY = cosA
+        arrowPath.reset()
+        arrowPath.moveTo(tipX, tipY)
+        arrowPath.lineTo(baseCx + halfWidth * perpX, baseCy + halfWidth * perpY)
+        arrowPath.lineTo(baseCx - halfWidth * perpX, baseCy - halfWidth * perpY)
+        arrowPath.close()
+        canvas.drawPath(arrowPath, beliefPeakPaint)
+    }
+
+    private fun scheduleYawRefresh() {
+        if (yawRefreshScheduled || orientationProvider == null) return
+        yawRefreshScheduled = true
+        Choreographer.getInstance().postFrameCallback(yawCallback)
+    }
+
+    private fun startYawRefresh() = scheduleYawRefresh()
+
+    private fun stopYawRefresh() {
+        if (yawRefreshScheduled) {
+            Choreographer.getInstance().removeFrameCallback(yawCallback)
+            yawRefreshScheduled = false
+        }
+    }
+
+    /** Shortest signed arc from [from] to [to], in (-180, 180]. */
+    private fun angularDelta(to: Float, from: Float): Float {
+        var d = to - from
+        if (d > 180f) d -= 360f
+        if (d < -180f) d += 360f
+        return d
     }
 
     private fun urgencyColor(urgency: Urgency): Int = when (urgency) {
@@ -262,5 +424,14 @@ class RadarView @JvmOverloads constructor(
         private const val SWEEP_PERIOD_MS = 3000L
         private const val PULSE_PERIOD_MS = 6000L
         private const val MAX_VISIBLE_EVENTS = 4
+
+        /** Amplifier on `bot_ild` before clamping for the Y axis. CSV shows confident
+         *  detections with bot_ild ~±0.6, so 1.5× lets typical sources reach ~±0.9 on the
+         *  radar without saturating. */
+        private const val Y_SENSITIVITY = 1.5f
+
+        /** Minimum yaw change (degrees) before the choreographer-driven refresh issues
+         *  a redraw. Prevents continuous invalidates while the phone is stationary. */
+        private const val YAW_INVALIDATE_THRESHOLD_DEG = 0.5f
     }
 }

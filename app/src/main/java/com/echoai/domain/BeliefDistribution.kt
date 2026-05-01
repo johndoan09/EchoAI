@@ -1,0 +1,137 @@
+package com.echoai.domain
+
+import kotlin.math.cos
+import kotlin.math.exp
+
+/**
+ * Bayesian belief over world-frame source direction (azimuth in degrees, [0, 360)).
+ *
+ * The phone has 1D directional sensitivity along its long axis (top-edge ↔ bottom-edge).
+ * Per audio window we get a long-axis bias measurement (e.g., bot_ild) and the phone's
+ * current world-frame yaw. As the user rotates the phone, the device's sensitive axis
+ * sweeps through different world headings, and combining the measurements across
+ * rotations recovers the source's world-frame direction — the rotational-aperture trick.
+ *
+ * Sensitivity model: `expected_bias = biasScale × cos(deviceAngle)` where deviceAngle is
+ * the source's bearing in the device frame, defined so that
+ *  - 0° = TOP edge of phone
+ *  - 180° = BOT edge of phone (charger end)
+ *  - ±90° = perpendicular to long axis → expected bias zero, broadside cone of confusion
+ *    that's resolved by rotation
+ *
+ * Empirical polarity on S25 Ultra (CAMCORDER source): positive bot_ild corresponds to a
+ * source at the phone's BOTTOM edge (deviceAngle ≈ 180°). Since cos(180°) = -1, the
+ * caller must pass a **negative** [biasScale] so that `biasScale × cos(180°) > 0` matches
+ * the positive measured ILD.
+ *
+ * Update is a Gaussian-likelihood Bayesian step on each window, then exponential decay
+ * back toward uniform so old measurements age out (the source might be moving or
+ * intermittent, and the belief shouldn't latch on a stale estimate forever).
+ *
+ * Callers should gate updates on signal presence (e.g., YAMNet confidence > threshold) —
+ * updating during silence feeds near-zero ILD into the model, which pushes phantom
+ * evidence toward the ±90° broadside bins.
+ *
+ * Not thread-safe — call [update] / [snapshot] / [argmaxDegrees] from one coroutine.
+ */
+class BeliefDistribution(
+    private val numBins: Int = 36,                  // 10° resolution
+    private val biasScale: Float = 0.20f,           // empirical |bias| at 0° / 180°
+    private val measurementSigma: Float = 0.15f,    // Gaussian noise std around expected bias
+    private val decayRate: Float = 0.05f,           // per-update fraction toward uniform prior
+) {
+    private val bins = FloatArray(numBins) { 1f / numBins }
+    private val binDegrees = 360f / numBins
+
+    /**
+     * Apply one window's measurement. [measuredBias] is the long-axis bias signal
+     * (positive = source toward BOT edge of phone). [phoneYawDegrees] is the heading
+     * of the phone's TOP edge in world frame (0 = north).
+     */
+    fun update(measuredBias: Float, phoneYawDegrees: Float) {
+        // Decay toward uniform first, so the prior is what we'd use absent of new info.
+        val uniform = 1f / numBins
+        for (i in bins.indices) {
+            bins[i] = bins[i] * (1f - decayRate) + uniform * decayRate
+        }
+
+        // Gaussian-likelihood update per candidate world-frame angle.
+        val twoSigmaSq = 2f * measurementSigma * measurementSigma
+        for (i in bins.indices) {
+            val worldAngle = i * binDegrees
+            val deviceAngle = worldAngle - phoneYawDegrees
+            val expectedBias = biasScale * cos(Math.toRadians(deviceAngle.toDouble())).toFloat()
+            val residual = measuredBias - expectedBias
+            val likelihood = exp(-(residual * residual) / twoSigmaSq)
+            bins[i] *= likelihood
+        }
+
+        // Renormalize. Underflow guard: if all likelihoods collapsed, restart uniform.
+        var sum = 0f
+        for (b in bins) sum += b
+        if (sum > 1e-20f) {
+            val invSum = 1f / sum
+            for (i in bins.indices) bins[i] *= invSum
+        } else {
+            for (i in bins.indices) bins[i] = uniform
+        }
+    }
+
+    /**
+     * Decay the distribution toward uniform without applying a measurement. Used during
+     * silence so a stale, peaky belief gradually washes out instead of latching. Default
+     * [rate] matches [decayRate] (idempotent with the decay step inside [update]); callers
+     * can pass a higher rate to fade the belief faster than the normal-update cadence.
+     */
+    fun decayOnly(rate: Float = decayRate) {
+        val uniform = 1f / numBins
+        for (i in bins.indices) {
+            bins[i] = bins[i] * (1f - rate) + uniform * rate
+        }
+    }
+
+    /** World-frame angle (degrees) of the most-likely bin. */
+    fun argmaxDegrees(): Float {
+        var bestIdx = 0
+        var bestVal = Float.NEGATIVE_INFINITY
+        for (i in bins.indices) {
+            if (bins[i] > bestVal) { bestVal = bins[i]; bestIdx = i }
+        }
+        return bestIdx * binDegrees
+    }
+
+    /** Peak belief value in [0, 1]. Close to 1/numBins ≈ 0.028 means uniform / no info. */
+    fun maxBelief(): Float {
+        var m = 0f
+        for (b in bins) if (b > m) m = b
+        return m
+    }
+
+    /**
+     * Rate-limited angular EMA of [argmaxDegrees]. Moves at most [maxStepDeg] per call
+     * toward the current argmax, preventing the peak marker from jumping when the cosine
+     * mirror ambiguity causes the argmax to flip between two modes.
+     */
+    private var smoothedPeak: Float? = null
+
+    fun smoothedPeakDegrees(maxStepDeg: Float = 20f): Float {
+        val raw = argmaxDegrees()
+        val prev = smoothedPeak ?: run { smoothedPeak = raw; return raw }
+        var delta = raw - prev
+        if (delta > 180f) delta -= 360f
+        if (delta < -180f) delta += 360f
+        val step = delta.coerceIn(-maxStepDeg, maxStepDeg)
+        val next = ((prev + step) % 360f + 360f) % 360f
+        smoothedPeak = next
+        return next
+    }
+
+    /** Defensive copy of the current belief, length [numBins]. Bin i covers angle i*[binDegrees]. */
+    fun snapshot(): FloatArray = bins.copyOf()
+
+    fun reset() {
+        val uniform = 1f / numBins
+        for (i in bins.indices) bins[i] = uniform
+        smoothedPeak = null
+    }
+}
