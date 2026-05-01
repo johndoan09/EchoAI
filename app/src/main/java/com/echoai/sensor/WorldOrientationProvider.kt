@@ -26,15 +26,15 @@ object NullWorldOrientation : WorldOrientationProvider {
 }
 
 /**
- * Extract yaw (rotation around world Z axis) from a quaternion in [w, x, y, z] form
- * — the convention used by `SensorManager.getQuaternionFromVector`. Returns degrees
- * in [0, 360).
+ * Extract the heading of the device's Y-axis (top edge) from a quaternion in [w, x, y, z]
+ * form — the convention used by `SensorManager.getQuaternionFromVector`. Returns degrees
+ * in [0, 360): 0 = north, 90 = east, matching `SensorManager.getOrientation`.
  */
 fun yawDegreesFromQuaternion(q: FloatArray): Float {
     val w = q[0]; val x = q[1]; val y = q[2]; val z = q[3]
     val yawRad = atan2(
-        2.0 * (w * z + x * y),
-        1.0 - 2.0 * (y * y + z * z),
+        2.0 * (x * y - w * z),
+        1.0 - 2.0 * (x * x + z * z),
     )
     val deg = Math.toDegrees(yawRad).toFloat()
     return ((deg % 360f) + 360f) % 360f

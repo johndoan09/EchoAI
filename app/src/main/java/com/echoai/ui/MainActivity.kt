@@ -65,15 +65,14 @@ class MainActivity : AppCompatActivity() {
     private val localizationStage = LocalizationStage()
     private val fusionStage = FusionStage()
     // BeliefDistribution is fed `bot_ild` (the strong within-pair ILD signal that captures
-    // long-axis source direction). bot_ild swings ±0.6 in confident speech frames, so
-    // biasScale = 0.5 matches the empirical range; sigma = 0.25 allows for noise without
-    // collapsing belief on a single anomalous reading. decayRate = 0.20 gives ~1 s
-    // half-life so the belief tracks the *current* dominant source rather than averaging
-    // across past sources at different positions.
+    // long-axis source direction). Positive bot_ild = source toward BOTTOM of phone
+    // (deviceAngle ≈ 180°), so biasScale is negative so that cos(180°)*biasScale > 0.
+    // decayRate = 0.04 ≈ 5 s half-life — slow enough that evidence from diverse phone
+    // headings accumulates to resolve the cosine left/right ambiguity.
     private val belief = BeliefDistribution(
-        biasScale = 0.5f,
+        biasScale = -0.5f,
         measurementSigma = 0.25f,
-        decayRate = 0.20f,
+        decayRate = 0.04f,
     )
 
     private var pipelineJob: Job? = null
@@ -200,10 +199,12 @@ class MainActivity : AppCompatActivity() {
         val azX = devicePos?.azimuthFromBottomIld()
         val azLag = devicePos?.azimuthFromLag()
 
-        // Rotational-aperture localizer update. Feed bot_ild (within-pair ILD = the long-
-        // axis bias signal that survives AGC). Skip if IMU hasn't produced a sample yet.
+        // Rotational-aperture localizer update. Only feed the belief when (a) the IMU has
+        // produced a sample and (b) YAMNet detected a sound with reasonable confidence —
+        // updating during silence pushes phantom peaks toward the broadside cone.
         val yaw = orientationProvider.yawDegrees()
-        if (yaw != null) {
+        val topLabel = classification.topK.firstOrNull()
+        if (yaw != null && topLabel != null && topLabel.confidence > 0.3f) {
             belief.update(multi.full.bottomIld, yaw)
         }
 

@@ -27,13 +27,19 @@ class RotationVectorProvider(context: Context) : WorldOrientationProvider {
 
     private val listener = object : SensorEventListener {
         private val tmpQuat = FloatArray(4)
+        private val tmpRotMatrix = FloatArray(9)
+        private val tmpOrientation = FloatArray(3)
 
         override fun onSensorChanged(event: SensorEvent) {
-            // Android writes [w, x, y, z] into the output array.
             SensorManager.getQuaternionFromVector(tmpQuat, event.values)
-            val q = tmpQuat.copyOf()
-            latestQuat = q
-            latestYaw = yawDegreesFromQuaternion(q)
+            latestQuat = tmpQuat.copyOf()
+
+            // Use Android's getOrientation (proven correct for the ENU → device convention)
+            // rather than manual quaternion → Euler decomposition.
+            SensorManager.getRotationMatrixFromVector(tmpRotMatrix, event.values)
+            SensorManager.getOrientation(tmpRotMatrix, tmpOrientation)
+            val deg = Math.toDegrees(tmpOrientation[0].toDouble()).toFloat()
+            latestYaw = ((deg % 360f) + 360f) % 360f
         }
 
         override fun onAccuracyChanged(sensor: Sensor?, accuracy: Int) {}

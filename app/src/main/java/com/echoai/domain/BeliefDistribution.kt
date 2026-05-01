@@ -12,20 +12,25 @@ import kotlin.math.exp
  * sweeps through different world headings, and combining the measurements across
  * rotations recovers the source's world-frame direction — the rotational-aperture trick.
  *
- * Sensitivity model: `expected_bias = +biasScale × cos(deviceAngle)` where deviceAngle is
+ * Sensitivity model: `expected_bias = biasScale × cos(deviceAngle)` where deviceAngle is
  * the source's bearing in the device frame, defined so that
- *  - 0° = TOP edge of phone — empirically corresponds to bot_ild *positive* (top mic
- *    physically louder, mapped to the R channel by Samsung's CAMCORDER virtual stereo).
- *    The earlier "-biasScale" sign was inferred from naming (bot_L ≟ bottom mic) but
- *    user testing showed the belief consistently landed at the antipodal of the true
- *    source direction, indicating the L/R channel-to-mic mapping is the opposite.
- *  - 180° = BOT edge of phone (charger end) → expected bias negative
+ *  - 0° = TOP edge of phone
+ *  - 180° = BOT edge of phone (charger end)
  *  - ±90° = perpendicular to long axis → expected bias zero, broadside cone of confusion
  *    that's resolved by rotation
+ *
+ * Empirical polarity on S25 Ultra (CAMCORDER source): positive bot_ild corresponds to a
+ * source at the phone's BOTTOM edge (deviceAngle ≈ 180°). Since cos(180°) = -1, the
+ * caller must pass a **negative** [biasScale] so that `biasScale × cos(180°) > 0` matches
+ * the positive measured ILD.
  *
  * Update is a Gaussian-likelihood Bayesian step on each window, then exponential decay
  * back toward uniform so old measurements age out (the source might be moving or
  * intermittent, and the belief shouldn't latch on a stale estimate forever).
+ *
+ * Callers should gate updates on signal presence (e.g., YAMNet confidence > threshold) —
+ * updating during silence feeds near-zero ILD into the model, which pushes phantom
+ * evidence toward the ±90° broadside bins.
  *
  * Not thread-safe — call [update] / [snapshot] / [argmaxDegrees] from one coroutine.
  */
