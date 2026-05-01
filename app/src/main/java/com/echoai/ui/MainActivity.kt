@@ -5,12 +5,14 @@ import android.app.ActivityOptions
 import android.animation.ValueAnimator
 import android.annotation.SuppressLint
 import android.app.AlertDialog
+import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Bundle
 import android.text.Html
 import android.text.InputType
+import android.util.Log
 import android.view.LayoutInflater
 import android.view.View
 import android.view.ViewGroup
@@ -40,6 +42,7 @@ import com.echoai.domain.BeliefDistribution
 import com.echoai.domain.ClassificationResult
 import com.echoai.domain.EventTracker
 import com.echoai.domain.PinnedAlertTracker
+import com.echoai.domain.PinnedAlertUpdates
 import com.echoai.domain.ProfileManager
 import com.echoai.domain.SoundEvent
 import com.echoai.domain.SoundProfile
@@ -52,12 +55,15 @@ import com.echoai.pipeline.ClassificationStage
 import com.echoai.pipeline.FusionStage
 import com.echoai.pipeline.LocalizationStage
 import com.echoai.sensor.RotationVectorProvider
+import com.echoai.service.PassiveMonitoringService
+import com.echoai.util.AppForegroundTracker
 import com.echoai.util.HapticManager
 import com.google.android.material.bottomsheet.BottomSheetDialog
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -67,14 +73,29 @@ class MainActivity : AppCompatActivity() {
     private lateinit var binding: ActivityMainBinding
     private lateinit var pinnedAdapter: PinnedAlertAdapter
     private lateinit var sceneChipAdapter: SceneChipAdapter
+    private val listeningPrefs by lazy {
+        getSharedPreferences(LISTENING_PREFS_NAME, Context.MODE_PRIVATE)
+    }
 
     private var pendingStart = false
+    private var notificationPermissionRequested = false
+    private var requestingNotificationPermission = false
+    private var backgroundMonitoringFromLive = false
     private val requestMic = registerForActivityResult(
         ActivityResultContracts.RequestPermission()
     ) { granted ->
-        if (granted && pendingStart) startLive()
-        else if (!granted) binding.statusText.text = getString(R.string.mic_permission_denied)
+        if (granted && pendingStart) {
+            setListeningSessionActive(true)
+            startLiveAfterStoppingPassive()
+        } else {
+            binding.statusText.text = getString(R.string.mic_permission_denied)
+        }
         pendingStart = false
+    }
+    private val requestNotifications = registerForActivityResult(
+        ActivityResultContracts.RequestPermission()
+    ) {
+        requestingNotificationPermission = false
     }
 
     // --- Pipeline (localization + IMU stack from imu-bayesian-belief, profile-aware fusion from main) ---
@@ -169,6 +190,8 @@ class MainActivity : AppCompatActivity() {
         refreshPinnedSection(animate = false)
 
         observeProfiles()
+        observePinnedAlertUpdates()
+        restoreListeningSessionIfAllowed()
     }
 
     private fun setupSceneChips() {
@@ -214,7 +237,15 @@ class MainActivity : AppCompatActivity() {
                 to: androidx.recyclerview.widget.RecyclerView.ViewHolder,
             ): Boolean {
                 if (to.itemViewType == SceneChipAdapter.TYPE_ADD) return false
-                sceneChipAdapter.moveItem(from.adapterPosition, to.adapterPosition)
+                val fromPosition = from.bindingAdapterPosition
+                val toPosition = to.bindingAdapterPosition
+                if (
+                    fromPosition == androidx.recyclerview.widget.RecyclerView.NO_POSITION ||
+                    toPosition == androidx.recyclerview.widget.RecyclerView.NO_POSITION
+                ) {
+                    return false
+                }
+                sceneChipAdapter.moveItem(fromPosition, toPosition)
                 return true
             }
 
@@ -270,14 +301,31 @@ class MainActivity : AppCompatActivity() {
         ViewCompat.requestApplyInsets(binding.root)
     }
 
+    override fun onStart() {
+        super.onStart()
+        AppForegroundTracker.onActivityStarted()
+    }
+
+    override fun onPause() {
+        super.onPause()
+        if (liveActive && isListeningSessionActive() && !requestingNotificationPermission) {
+            handOffLiveToBackgroundMonitoring()
+        }
+    }
+
     override fun onStop() {
+        AppForegroundTracker.onActivityStopped()
         super.onStop()
-        if (liveActive) stopLive()
     }
 
     override fun onResume() {
         super.onResume()
         profileManager.refreshFromStorage()
+        refreshPinnedSection(animate = false)
+        if (isListeningSessionActive() && backgroundMonitoringFromLive) {
+            backgroundMonitoringFromLive = false
+            startLiveAfterStoppingPassive()
+        }
     }
 
     private fun renderWordmark() {
@@ -449,6 +497,16 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
+    private fun observePinnedAlertUpdates() {
+        lifecycleScope.launch {
+            repeatOnLifecycle(Lifecycle.State.STARTED) {
+                PinnedAlertUpdates.updates.collect {
+                    refreshPinnedSection()
+                }
+            }
+        }
+    }
+
     private fun showProfileOptionsSheet(profile: SoundProfile) {
         val dialog = BottomSheetDialog(this, R.style.Theme_EchoAI_BottomSheet)
         val sheet = SheetProfileOptionsBinding.inflate(LayoutInflater.from(this))
@@ -542,13 +600,75 @@ class MainActivity : AppCompatActivity() {
 
     private fun onLiveToggle() {
         if (liveActive) {
-            stopLive()
+            backgroundMonitoringFromLive = false
+            setListeningSessionActive(false)
+            PassiveMonitoringService.stop(this)
+            stopLive(startBackgroundMonitoring = false)
         } else {
             val granted = ContextCompat.checkSelfPermission(
                 this, Manifest.permission.RECORD_AUDIO
             ) == PackageManager.PERMISSION_GRANTED
-            if (granted) startLive()
+            if (granted) {
+                setListeningSessionActive(true)
+                startLiveAfterStoppingPassive()
+            }
             else { pendingStart = true; requestMic.launch(Manifest.permission.RECORD_AUDIO) }
+        }
+    }
+
+    private fun isListeningSessionActive(): Boolean =
+        listeningPrefs.getBoolean(KEY_LISTENING_SESSION_ACTIVE, false)
+
+    private fun setListeningSessionActive(active: Boolean) {
+        listeningPrefs.edit().putBoolean(KEY_LISTENING_SESSION_ACTIVE, active).apply()
+    }
+
+    private fun restoreListeningSessionIfAllowed() {
+        if (!isListeningSessionActive()) return
+        val granted = ContextCompat.checkSelfPermission(
+            this, Manifest.permission.RECORD_AUDIO
+        ) == PackageManager.PERMISSION_GRANTED
+        if (granted) {
+            startLiveAfterStoppingPassive()
+        } else {
+            setListeningSessionActive(false)
+        }
+    }
+
+    private fun startLiveAfterStoppingPassive() {
+        PassiveMonitoringService.stop(this)
+        lifecycleScope.launch {
+            delay(PASSIVE_TO_LIVE_HANDOFF_MS)
+            startLive()
+        }
+    }
+
+    private fun startBackgroundMonitoringIfAllowed() {
+        if (ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) !=
+            PackageManager.PERMISSION_GRANTED
+        ) {
+            return
+        }
+        if (!PassiveMonitoringService.start(this)) {
+            Log.w(TAG, "Background listening service could not be started")
+        }
+    }
+
+    private fun handOffLiveToBackgroundMonitoring() {
+        backgroundMonitoringFromLive = true
+        stopLive(startBackgroundMonitoring = true)
+    }
+
+    private fun requestNotificationPermissionIfNeeded() {
+        if (
+            Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
+            ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS) !=
+            PackageManager.PERMISSION_GRANTED &&
+            !notificationPermissionRequested
+        ) {
+            notificationPermissionRequested = true
+            requestingNotificationPermission = true
+            requestNotifications.launch(Manifest.permission.POST_NOTIFICATIONS)
         }
     }
 
@@ -556,6 +676,7 @@ class MainActivity : AppCompatActivity() {
     private fun startLive() {
         if (liveActive) return
         liveActive = true
+        requestNotificationPermissionIfNeeded()
 
         binding.liveToggle.text = getString(R.string.stop_live)
         binding.liveToggle.setCompoundDrawablesRelativeWithIntrinsicBounds(
@@ -599,7 +720,7 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    private fun stopLive() {
+    private fun stopLive(startBackgroundMonitoring: Boolean) {
         liveActive = false
         captureManager.stop()
         binding.radarView.setOrientationProvider(null)
@@ -620,6 +741,7 @@ class MainActivity : AppCompatActivity() {
 
         val err = captureManager.lastErrorMessage()
         if (err != null) binding.statusText.text = "Stopped — error: $err"
+        if (startBackgroundMonitoring) startBackgroundMonitoringIfAllowed()
     }
 
     private data class Frame(
@@ -764,5 +886,9 @@ class MainActivity : AppCompatActivity() {
         private const val LIVE_TOGGLE_CONTAINER_COMPACT_HEIGHT_DP = 66
         private const val LIVE_TOGGLE_CONTAINER_EXPANDED_HEIGHT_DP = 124
         private const val LIVE_TOGGLE_EXPANDED_OFFSET_Y_DP = 12
+        private const val PASSIVE_TO_LIVE_HANDOFF_MS = 250L
+        private const val LISTENING_PREFS_NAME = "echo_listening_session"
+        private const val KEY_LISTENING_SESSION_ACTIVE = "active"
+        private const val TAG = "MainActivity"
     }
 }
