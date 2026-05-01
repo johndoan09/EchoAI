@@ -21,6 +21,7 @@ import com.echoai.audio.AudioCaptureManager
 import com.echoai.audio.AudioWindow
 import com.echoai.databinding.ActivityMainBinding
 import com.echoai.domain.EventTracker
+import com.echoai.domain.PinnedAlertTracker
 import com.echoai.domain.ProfileManager
 import com.echoai.domain.SoundEvent
 import com.echoai.domain.SoundProfile
@@ -45,6 +46,7 @@ class MainActivity : AppCompatActivity() {
 
     private lateinit var binding: ActivityMainBinding
     private lateinit var eventAdapter: SoundEventAdapter
+    private lateinit var pinnedAdapter: PinnedAlertAdapter
 
     private var pendingStart = false
     private val requestMic = registerForActivityResult(
@@ -67,11 +69,11 @@ class MainActivity : AppCompatActivity() {
         FusionStage(EventTracker(urgencyClassifier = urgencyClassifier))
     }
     private val profileManager by lazy { ProfileManager(applicationContext) }
+    private val pinnedAlertTracker = PinnedAlertTracker()
 
     private var pipelineJob: Job? = null
     private var liveActive = false
 
-    /** Maps profileId → the Chip view currently in the ChipGroup. */
     private val chipMap = mutableMapOf<String, Chip>()
     private var suppressChipListener = false
 
@@ -84,13 +86,21 @@ class MainActivity : AppCompatActivity() {
         binding.eventsList.layoutManager = LinearLayoutManager(this)
         binding.eventsList.adapter = eventAdapter
 
+        pinnedAdapter = PinnedAlertAdapter(onDismiss = { label ->
+            pinnedAlertTracker.acknowledge(label)
+            refreshPinnedSection()
+        })
+        binding.pinnedAlertsList.layoutManager = LinearLayoutManager(this)
+        binding.pinnedAlertsList.adapter = pinnedAdapter
+
         binding.liveToggle.setOnClickListener { onLiveToggle() }
         binding.editProfileButton.setOnClickListener { openProfileEditor() }
 
         binding.profileChipGroup.setOnCheckedStateChangeListener { _, checkedIds ->
             if (suppressChipListener) return@setOnCheckedStateChangeListener
             val chipId = checkedIds.firstOrNull() ?: return@setOnCheckedStateChangeListener
-            val profileId = chipMap.entries.firstOrNull { it.value.id == chipId }?.key ?: return@setOnCheckedStateChangeListener
+            val profileId = chipMap.entries.firstOrNull { it.value.id == chipId }?.key
+                ?: return@setOnCheckedStateChangeListener
             profileManager.setActiveProfileId(profileId)
         }
 
@@ -102,14 +112,22 @@ class MainActivity : AppCompatActivity() {
         if (liveActive) stopLive()
     }
 
+    // --- Missed alerts ---
+
+    private fun refreshPinnedSection() {
+        val alerts = pinnedAlertTracker.snapshot()
+        pinnedAdapter.submitList(alerts)
+        val visible = alerts.isNotEmpty()
+        binding.missedAlertsHeader.visibility = if (visible) View.VISIBLE else View.GONE
+        binding.pinnedAlertsList.visibility = if (visible) View.VISIBLE else View.GONE
+    }
+
     // --- Profile chips ---
 
     private fun observeProfiles() {
         lifecycleScope.launch {
             repeatOnLifecycle(Lifecycle.State.STARTED) {
-                profileManager.allProfiles.collect { profiles ->
-                    rebuildChips(profiles)
-                }
+                profileManager.allProfiles.collect { profiles -> rebuildChips(profiles) }
             }
         }
         lifecycleScope.launch {
@@ -126,29 +144,20 @@ class MainActivity : AppCompatActivity() {
         suppressChipListener = true
         binding.profileChipGroup.removeAllViews()
         chipMap.clear()
-
         val activeId = profileManager.activeProfile.value.id
-
         for (profile in profiles) {
             val chip = makeFilterChip(profile.name).apply {
                 isChecked = profile.id == activeId
                 if (!profile.isPreset) {
-                    setOnLongClickListener {
-                        showDeleteProfileDialog(profile)
-                        true
-                    }
+                    setOnLongClickListener { showDeleteProfileDialog(profile); true }
                 }
             }
             binding.profileChipGroup.addView(chip)
             chipMap[profile.id] = chip
         }
-
-        // "+" chip to create a new profile
-        val addChip = makeActionChip("+").apply {
+        binding.profileChipGroup.addView(makeActionChip("+").apply {
             setOnClickListener { showCreateProfileDialog() }
-        }
-        binding.profileChipGroup.addView(addChip)
-
+        })
         suppressChipListener = false
     }
 
@@ -173,10 +182,7 @@ class MainActivity : AppCompatActivity() {
         }
 
     private fun showCreateProfileDialog() {
-        val editText = EditText(this).apply {
-            hint = "Profile name"
-            setSingleLine()
-        }
+        val editText = EditText(this).apply { hint = "Profile name"; setSingleLine() }
         val container = FrameLayout(this).apply {
             val pad = (20 * resources.displayMetrics.density).toInt()
             setPadding(pad, pad / 2, pad, 0)
@@ -223,10 +229,7 @@ class MainActivity : AppCompatActivity() {
                 this, Manifest.permission.RECORD_AUDIO
             ) == PackageManager.PERMISSION_GRANTED
             if (granted) startLive()
-            else {
-                pendingStart = true
-                requestMic.launch(Manifest.permission.RECORD_AUDIO)
-            }
+            else { pendingStart = true; requestMic.launch(Manifest.permission.RECORD_AUDIO) }
         }
     }
 
@@ -246,6 +249,8 @@ class MainActivity : AppCompatActivity() {
                     eventAdapter.submitList(events)
                     hapticManager.vibrateForHighest(events)
                     updateStatus(events)
+                    pinnedAlertTracker.onEvents(events)
+                    withContext(Dispatchers.Main) { refreshPinnedSection() }
                 }
             }
         }

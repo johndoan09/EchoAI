@@ -88,6 +88,27 @@
         android:textAppearance="?attr/textAppearanceBodyMedium"
         android:textColor="?attr/colorOnSurfaceVariant" />
 
+    <!-- Missed alerts section (shown when there are unacknowledged HIGH/CRITICAL events) -->
+    <TextView
+        android:id="@+id/missedAlertsHeader"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:paddingHorizontal="20dp"
+        android:paddingTop="8dp"
+        android:paddingBottom="4dp"
+        android:text="@string/missed_alerts"
+        android:textAppearance="?attr/textAppearanceTitleSmall"
+        android:textColor="?attr/colorError"
+        android:visibility="gone" />
+
+    <androidx.recyclerview.widget.RecyclerView
+        android:id="@+id/pinnedAlertsList"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:clipToPadding="false"
+        android:paddingHorizontal="12dp"
+        android:visibility="gone" />
+
     <!-- Detected sounds header (visible only when live + events present) -->
     <TextView
         android:id="@+id/eventsHeader"

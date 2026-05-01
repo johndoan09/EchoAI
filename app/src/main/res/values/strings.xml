@@ -13,5 +13,6 @@
     <string name="profile_city">City</string>
     <string name="profile_home">Home</string>
     <string name="profile_office">Office</string>
-    <string name="mic_permission_denied">Microphone permission denied. Grant it in Settings → Apps → echoAI → Permissions.</string>
+    <string name="missed_alerts">Pinned Alerts</string>
+<string name="mic_permission_denied">Microphone permission denied. Grant it in Settings → Apps → echoAI → Permissions.</string>
 </resources>
