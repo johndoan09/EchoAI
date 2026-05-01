@@ -5,8 +5,11 @@ import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.Paint
 import android.util.AttributeSet
+import android.view.Choreographer
 import android.view.View
 import com.echoai.domain.SoundEvent
+import com.echoai.sensor.WorldOrientationProvider
+import kotlin.math.abs
 import kotlin.math.min
 import kotlin.math.sin
 
@@ -108,6 +111,91 @@ class RadarView @JvmOverloads constructor(
         this.phoneYawDegrees = phoneYawDegrees
         this.peakWorldAngle = peakWorldAngle
         invalidate()
+    }
+
+    /**
+     * Combined setter: events + belief + yaw + peak in a single update with one
+     * [invalidate]. Used by the live pipeline path to avoid two consecutive layouts
+     * per audio window.
+     */
+    fun setData(
+        events: List<SoundEvent>,
+        belief: FloatArray,
+        phoneYawDegrees: Float,
+        peakWorldAngle: Float,
+    ) {
+        this.events = events
+        this.belief = belief
+        this.phoneYawDegrees = phoneYawDegrees
+        this.peakWorldAngle = peakWorldAngle
+        invalidate()
+    }
+
+    /**
+     * Wire an [WorldOrientationProvider] to drive the halo rotation at display rate
+     * (~60 fps) instead of the audio pipeline rate (~2 Hz). Call with `null` to stop
+     * the continuous refresh (e.g., when capture stops).
+     *
+     * Between audio-pipeline frames the belief / events / peak stay frozen; only the
+     * world-to-device-frame rotation is refreshed, so the halo and peak marker stay
+     * anchored to the world as the phone rotates.
+     */
+    fun setOrientationProvider(provider: WorldOrientationProvider?) {
+        orientationProvider = provider
+        if (provider != null && isAttachedToWindow) {
+            startYawRefresh()
+        } else {
+            stopYawRefresh()
+        }
+    }
+
+    private var orientationProvider: WorldOrientationProvider? = null
+    private var yawRefreshScheduled = false
+    private val yawCallback = object : Choreographer.FrameCallback {
+        override fun doFrame(frameTimeNanos: Long) {
+            yawRefreshScheduled = false
+            val provider = orientationProvider ?: return
+            val newYaw = provider.yawDegrees() ?: phoneYawDegrees
+            // Suppress redundant invalidates when the phone is stationary.
+            if (abs(angularDelta(newYaw, phoneYawDegrees)) > YAW_INVALIDATE_THRESHOLD_DEG) {
+                phoneYawDegrees = newYaw
+                invalidate()
+            }
+            scheduleYawRefresh()
+        }
+    }
+
+    private fun scheduleYawRefresh() {
+        if (yawRefreshScheduled || orientationProvider == null) return
+        yawRefreshScheduled = true
+        Choreographer.getInstance().postFrameCallback(yawCallback)
+    }
+
+    private fun startYawRefresh() = scheduleYawRefresh()
+
+    private fun stopYawRefresh() {
+        if (yawRefreshScheduled) {
+            Choreographer.getInstance().removeFrameCallback(yawCallback)
+            yawRefreshScheduled = false
+        }
+    }
+
+    override fun onAttachedToWindow() {
+        super.onAttachedToWindow()
+        if (orientationProvider != null) startYawRefresh()
+    }
+
+    override fun onDetachedFromWindow() {
+        stopYawRefresh()
+        super.onDetachedFromWindow()
+    }
+
+    /** Shortest signed arc from [from] to [to], in (-180, 180]. */
+    private fun angularDelta(to: Float, from: Float): Float {
+        var d = to - from
+        if (d > 180f) d -= 360f
+        if (d < -180f) d += 360f
+        return d
     }
 
     override fun onDraw(canvas: Canvas) {
@@ -214,5 +302,8 @@ class RadarView @JvmOverloads constructor(
          *  detections with bot_ild ~±0.6, so 1.5× lets typical sources reach ~±0.9 on the
          *  radar without saturating. */
         private const val Y_SENSITIVITY = 1.5f
+        /** Minimum yaw change (degrees) before the choreographer-driven refresh issues
+         *  a redraw. Prevents continuous invalidates while the phone is stationary. */
+        private const val YAW_INVALIDATE_THRESHOLD_DEG = 0.5f
     }
 }

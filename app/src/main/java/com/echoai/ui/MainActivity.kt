@@ -19,6 +19,7 @@ import com.echoai.audio.StereoMicTest
 import com.echoai.databinding.ActivityMainBinding
 import com.echoai.diagnostics.DiagnosticsLogger
 import com.echoai.domain.BeliefDistribution
+import com.echoai.domain.ClassificationResult
 import com.echoai.domain.LocalizationResult
 import com.echoai.domain.SoundEvent
 import com.echoai.ml.SoundClassifier
@@ -67,18 +68,24 @@ class MainActivity : AppCompatActivity() {
     // BeliefDistribution is fed `bot_ild` (the strong within-pair ILD signal that captures
     // long-axis source direction). Positive bot_ild = source toward BOTTOM of phone
     // (deviceAngle ≈ 180°), so biasScale is negative so that cos(180°)*biasScale > 0.
-    // decayRate = 0.04 ≈ 5 s half-life — slow enough that evidence from diverse phone
-    // headings accumulates to resolve the cosine left/right ambiguity.
+    // decayRate = 0.01 per update at 8 Hz ≈ 0.08/s effective decay (time-domain behavior
+    // preserved across the 2 → 4 → 8 Hz cadence bumps).
     private val belief = BeliefDistribution(
         biasScale = -0.5f,
         measurementSigma = 0.25f,
-        decayRate = 0.04f,
+        decayRate = 0.01f,
     )
 
     private var pipelineJob: Job? = null
     private var liveActive = false
     private var diagnosticsLogger: DiagnosticsLogger? = null
     private var diagnosticsFilePath: String? = null
+
+    // Classification cache: at 4 Hz localization / 2 Hz classification, every other window
+    // skips YAMNet and reuses the most-recent classification result. The reused result is
+    // at most one hop (~250 ms) old — well within EventTracker.staleAfterNanos (3 s).
+    private var lastClassification: ClassificationResult? = null
+    private var classificationFrameCounter = 0
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -139,8 +146,11 @@ class MainActivity : AppCompatActivity() {
             diagnosticsFilePath = it.file.absolutePath
         }
         belief.reset()
+        lastClassification = null
+        classificationFrameCounter = 0
         binding.resetBelief.isEnabled = true
         orientationProvider.start()
+        binding.radar.setOrientationProvider(orientationProvider)
         captureManager.start(lifecycleScope)
 
         pipelineJob = lifecycleScope.launch {
@@ -148,8 +158,12 @@ class MainActivity : AppCompatActivity() {
                 captureManager.windows.collectLatest { window ->
                     val frame = processWindow(window)
                     binding.results.text = frame.text
-                    binding.radar.setEvents(frame.events)
-                    binding.radar.setBelief(frame.beliefSnapshot, frame.phoneYaw, frame.beliefPeakAngle)
+                    binding.radar.setData(
+                        events = frame.events,
+                        belief = frame.beliefSnapshot,
+                        phoneYawDegrees = frame.phoneYaw,
+                        peakWorldAngle = frame.beliefPeakAngle,
+                    )
                 }
             }
         }
@@ -158,6 +172,7 @@ class MainActivity : AppCompatActivity() {
     private fun stopLive() {
         liveActive = false
         captureManager.stop()
+        binding.radar.setOrientationProvider(null)
         orientationProvider.stop()
         pipelineJob?.cancel()
         pipelineJob = null
@@ -184,12 +199,24 @@ class MainActivity : AppCompatActivity() {
         val beliefSnapshot: FloatArray,
         val phoneYaw: Float,
         val beliefPeakAngle: Float,
+        val beliefRawPeak: Float,
+        val beliefIntensity: Float,
     )
 
     private suspend fun processWindow(window: AudioWindow): Frame = coroutineScope {
-        val classifyJob = async(Dispatchers.Default) { classificationStage.classify(window) }
+        // YAMNet runs every Nth window; localization runs every window. Between
+        // classifications we reuse the cached result (the dominant source rarely
+        // changes within ~250 ms, so this is a safe assumption for stage-(a) attribution).
         val localizeJob = async(Dispatchers.Default) { localizationStage.localizeMultiScale(window) }
-        val classification = classifyJob.await()
+        val shouldClassify = (classificationFrameCounter % CLASSIFY_EVERY_N) == 0
+        classificationFrameCounter++
+        val classification = if (shouldClassify) {
+            val fresh = withContext(Dispatchers.Default) { classificationStage.classify(window) }
+            lastClassification = fresh
+            fresh
+        } else {
+            lastClassification ?: ClassificationResult(window.frameNumber, emptyList())
+        }
         val multi = localizeJob.await()
         val events = withContext(Dispatchers.Default) {
             fusionStage.process(classification, multi.full)
@@ -201,13 +228,22 @@ class MainActivity : AppCompatActivity() {
         // Rotational-aperture localizer update. Only feed the belief when (a) the IMU has
         // produced a sample and (b) YAMNet detected a sound with reasonable confidence —
         // updating during silence pushes phantom peaks toward the broadside cone.
+        // Use the 250 ms peak-energy sub-window's ILD: it changes more between consecutive
+        // emissions than the full-window ILD (consecutive 1 s windows share 87.5% of audio
+        // at 8 Hz, so their full-window ILDs are highly correlated).
         val yaw = orientationProvider.yawDegrees()
         val topLabel = classification.topK.firstOrNull()
         if (yaw != null && topLabel != null && topLabel.confidence > 0.3f) {
-            belief.update(multi.full.bottomIld, yaw)
+            belief.update(multi.sub.bottomIld, yaw)
         }
 
-        val smoothedPeak = belief.smoothedPeakDegrees()
+        // Compute belief readouts once. smoothedPeakDegrees advances internal EMA state,
+        // so it MUST only be called once per pipeline frame — calling it again from
+        // renderLive would double-step the smoother and re-introduce jitter.
+        // maxStepDeg=5 at 8 Hz ≈ 40°/s peak-marker travel speed.
+        val rawPeak = belief.argmaxDegrees()
+        val smoothedPeak = belief.smoothedPeakDegrees(maxStepDeg = 5f)
+        val intensity = belief.maxBelief()
 
         diagnosticsLogger?.log(
             window = window,
@@ -218,15 +254,20 @@ class MainActivity : AppCompatActivity() {
             azimuthLagDeg = azLag,
             phoneYawDeg = yaw,
             beliefPeakDeg = smoothedPeak,
-            beliefIntensity = belief.maxBelief(),
+            beliefIntensity = intensity,
         )
 
         Frame(
-            text = renderLive(window, classification.topK, multi.full, multi.sub, events, yaw),
+            text = renderLive(
+                window, classification.topK, multi.full, multi.sub, events, yaw,
+                rawPeak, smoothedPeak, intensity,
+            ),
             events = events,
             beliefSnapshot = belief.snapshot(),
             phoneYaw = yaw ?: 0f,
             beliefPeakAngle = smoothedPeak,
+            beliefRawPeak = rawPeak,
+            beliefIntensity = intensity,
         )
     }
 
@@ -237,6 +278,9 @@ class MainActivity : AppCompatActivity() {
         sub: LocalizationResult,
         events: List<SoundEvent>,
         yawDegrees: Float?,
+        beliefRawPeak: Float,
+        beliefSmoothedPeak: Float,
+        beliefIntensity: Float,
     ): String = buildString {
         appendLine("DIAGNOSTIC  win #${window.frameNumber}  ${window.sampleRate}Hz  $classifierBackend")
         appendLine("Hold flat, ROTATE the phone slowly while a sound source is active.")
@@ -246,7 +290,7 @@ class MainActivity : AppCompatActivity() {
         appendLine("IMU / belief:")
         appendLine("  phone yaw  ${yawDegrees?.let { "%6.1f°".format(it) } ?: "    ?  "}  (world heading of TOP edge)")
         appendLine(
-            "  belief raw  ${"%6.1f°".format(belief.argmaxDegrees())}  smooth ${"%6.1f°".format(belief.smoothedPeakDegrees())}  i=${"%.3f".format(belief.maxBelief())}"
+            "  belief raw  ${"%6.1f°".format(beliefRawPeak)}  smooth ${"%6.1f°".format(beliefSmoothedPeak)}  i=${"%.3f".format(beliefIntensity)}"
         )
         appendLine()
 
@@ -345,6 +389,9 @@ class MainActivity : AppCompatActivity() {
         private const val RMS_BAR_MAX = 4000f
         /** Within-pair lag search range; matches MAX_LAG_WITHIN in LocalizationStage. */
         private const val LAG_RANGE = 16
+        /** Run YAMNet on every Nth pipeline window. With HOP_FRAMES = 2000 (8 Hz), N=4
+         *  gives 2 Hz classification while localization + belief update runs at full 8 Hz. */
+        private const val CLASSIFY_EVERY_N = 4
     }
 
     @SuppressLint("MissingPermission")
