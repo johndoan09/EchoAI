@@ -21,7 +21,10 @@ class FusionStage(
 
     /** Apply profile settings to the tracker: priority labels and per-label urgency overrides. */
     fun applyProfile(profile: SoundProfile) {
-        tracker.priorityLabels = profile.priorityLabels
+        val urgentOverrideLabels = profile.urgencyOverrides
+            .filterValues { it == Urgency.HIGH || it == Urgency.CRITICAL }
+            .keys
+        tracker.priorityLabels = profile.priorityLabels + urgentOverrideLabels
         tracker.urgencyOverrides = profile.urgencyOverrides
     }
 }

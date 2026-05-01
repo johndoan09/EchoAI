@@ -19,6 +19,10 @@ import android.widget.TextView
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.content.ContextCompat
+import androidx.core.view.ViewCompat
+import androidx.core.view.WindowCompat
+import androidx.core.view.WindowInsetsCompat
+import androidx.core.view.updatePadding
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.lifecycleScope
 import androidx.lifecycle.repeatOnLifecycle
@@ -85,8 +89,10 @@ class MainActivity : AppCompatActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        WindowCompat.setDecorFitsSystemWindows(window, false)
         binding = ActivityMainBinding.inflate(layoutInflater)
         setContentView(binding.root)
+        installSystemBarInsets()
 
         renderWordmark()
 
@@ -124,9 +130,35 @@ class MainActivity : AppCompatActivity() {
         observeProfiles()
     }
 
+    private fun installSystemBarInsets() {
+        val rootStartTop = binding.root.paddingTop
+        val rootStartLeft = binding.root.paddingLeft
+        val rootStartRight = binding.root.paddingRight
+        val tabStartBottom = binding.bottomTabBar.paddingBottom
+
+        ViewCompat.setOnApplyWindowInsetsListener(binding.root) { view, insets ->
+            val systemBars = insets.getInsets(WindowInsetsCompat.Type.systemBars())
+            view.updatePadding(
+                left = rootStartLeft + systemBars.left,
+                top = rootStartTop + systemBars.top,
+                right = rootStartRight + systemBars.right,
+            )
+            binding.bottomTabBar.updatePadding(
+                bottom = tabStartBottom + systemBars.bottom
+            )
+            insets
+        }
+        ViewCompat.requestApplyInsets(binding.root)
+    }
+
     override fun onStop() {
         super.onStop()
         if (liveActive) stopLive()
+    }
+
+    override fun onResume() {
+        super.onResume()
+        profileManager.refreshFromStorage()
     }
 
     private fun renderWordmark() {

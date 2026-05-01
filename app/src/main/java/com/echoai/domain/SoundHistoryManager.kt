@@ -79,8 +79,7 @@ class SoundHistoryManager(context: Context) {
     }
 
     private fun effectiveRank(event: SoundEvent): Int =
-        if (event.isPrioritized) maxOf(event.urgency.ordinalRank, Urgency.HIGH.ordinalRank)
-        else event.urgency.ordinalRank
+        event.urgency.ordinalRank
 
     private fun loadRaw(): JSONArray = try {
         JSONArray(prefs.getString(KEY_HISTORY, "[]") ?: "[]")
