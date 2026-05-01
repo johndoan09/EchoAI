@@ -16,7 +16,7 @@ import java.util.Date
 import java.util.Locale
 
 class PinnedAlertAdapter(
-    private val onDismiss: (label: String) -> Unit,
+    private val onDismiss: (alert: PinnedAlert) -> Unit,
     private val onTap: (label: String) -> Unit = {},
 ) : ListAdapter<PinnedAlert, PinnedAlertAdapter.VH>(DIFF) {
 
@@ -71,7 +71,7 @@ class PinnedAlertAdapter(
         b.subtitleTimeText.text = "${if (alert.isPrioritized) "Pinned" else "Detected"} · " +
             timeFmt.format(Date(alert.detectedAtMs))
 
-        b.dismissButton.setOnClickListener { onDismiss(alert.label) }
+        b.dismissButton.setOnClickListener { onDismiss(alert) }
         b.root.setOnClickListener { onTap(alert.label) }
     }
 
@@ -81,7 +81,7 @@ class PinnedAlertAdapter(
     companion object {
         private val DIFF = object : DiffUtil.ItemCallback<PinnedAlert>() {
             override fun areItemsTheSame(old: PinnedAlert, new: PinnedAlert) =
-                old.label == new.label
+                old.label == new.label && old.urgency == new.urgency
 
             override fun areContentsTheSame(old: PinnedAlert, new: PinnedAlert) =
                 old == new

@@ -85,6 +85,7 @@
 
     <!-- Floating Start/Listening pill button -->
     <LinearLayout
+        android:id="@+id/liveToggleContainer"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
         android:gravity="center"

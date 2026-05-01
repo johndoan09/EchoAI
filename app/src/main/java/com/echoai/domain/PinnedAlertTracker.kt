@@ -11,16 +11,20 @@ data class PinnedAlert(
  * Collects HIGH/CRITICAL events into a persistent unacknowledged set. Entries survive
  * until the user explicitly dismisses them, so a sound that fired while the phone was
  * idle stays visible on next interaction.
+ *
+ * Keyed by (label, urgency) so that a re-classified sound (urgency changed in scene
+ * profile) adds a new banner alongside the original rather than being suppressed.
  */
 class PinnedAlertTracker {
 
-    private val pinned = mutableMapOf<String, PinnedAlert>()
+    private val pinned = mutableMapOf<Pair<String, Urgency>, PinnedAlert>()
 
     fun onEvents(events: List<SoundEvent>) {
         for (event in events) {
-            if (event.label in pinned) continue
-            if (effectiveRank(event) >= Urgency.HIGH.ordinalRank) {
-                pinned[event.label] = PinnedAlert(
+            val key = event.label to event.urgency
+            if (key in pinned) continue
+            if (event.urgency.ordinalRank >= Urgency.HIGH.ordinalRank) {
+                pinned[key] = PinnedAlert(
                     label = event.label,
                     urgency = event.urgency,
                     isPrioritized = event.isPrioritized,
@@ -30,18 +34,16 @@ class PinnedAlertTracker {
         }
     }
 
-    fun acknowledge(label: String) {
-        pinned.remove(label)
+    fun acknowledge(label: String, urgency: Urgency) {
+        pinned.remove(label to urgency)
+    }
+
+    fun acknowledgeAll() {
+        pinned.clear()
     }
 
     fun snapshot(): List<PinnedAlert> =
-        pinned.values.sortedByDescending { effectivePinnedRank(it) }
+        pinned.values.sortedByDescending { it.detectedAtMs }
 
     fun isEmpty(): Boolean = pinned.isEmpty()
-
-    private fun effectiveRank(event: SoundEvent): Int =
-        event.urgency.ordinalRank
-
-    private fun effectivePinnedRank(alert: PinnedAlert): Int =
-        alert.urgency.ordinalRank
 }

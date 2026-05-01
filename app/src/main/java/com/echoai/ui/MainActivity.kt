@@ -1,6 +1,7 @@
 package com.echoai.ui
 
 import android.Manifest
+import android.animation.ValueAnimator
 import android.annotation.SuppressLint
 import android.app.AlertDialog
 import android.content.Intent
@@ -11,6 +12,7 @@ import android.text.Html
 import android.view.LayoutInflater
 import android.view.View
 import android.view.ViewGroup
+import android.view.animation.DecelerateInterpolator
 import android.widget.EditText
 import android.widget.FrameLayout
 import android.widget.ImageView
@@ -84,6 +86,7 @@ class MainActivity : AppCompatActivity() {
 
     private var pipelineJob: Job? = null
     private var liveActive = false
+    private var pinnedSectionVisible = false
 
     private val sceneChips = mutableMapOf<String, View>()
 
@@ -97,8 +100,8 @@ class MainActivity : AppCompatActivity() {
         renderWordmark()
 
         pinnedAdapter = PinnedAlertAdapter(
-            onDismiss = { label ->
-                pinnedAlertTracker.acknowledge(label)
+            onDismiss = { alert ->
+                pinnedAlertTracker.acknowledge(alert.label, alert.urgency)
                 refreshPinnedSection()
             },
             onTap = { label ->
@@ -115,7 +118,7 @@ class MainActivity : AppCompatActivity() {
             startActivity(Intent(this, HistoryActivity::class.java))
         }
         binding.clearAllButton.setOnClickListener {
-            pinnedAlertTracker.snapshot().forEach { pinnedAlertTracker.acknowledge(it.label) }
+            pinnedAlertTracker.acknowledgeAll()
             refreshPinnedSection()
         }
         binding.tabListening.setOnClickListener { /* already here */ }
@@ -126,6 +129,9 @@ class MainActivity : AppCompatActivity() {
                 }
             )
         }
+
+        // No alerts on launch — start with the expanded button state immediately (no animation)
+        applyLiveToggleState(expanded = true, animate = false)
 
         observeProfiles()
     }
@@ -174,7 +180,51 @@ class MainActivity : AppCompatActivity() {
     private fun refreshPinnedSection() {
         val alerts = pinnedAlertTracker.snapshot()
         pinnedAdapter.submitList(alerts)
-        binding.pinnedAlertsSection.visibility = if (alerts.isEmpty()) View.GONE else View.VISIBLE
+        val nowVisible = alerts.isNotEmpty()
+        binding.pinnedAlertsSection.visibility = if (nowVisible) View.VISIBLE else View.GONE
+        if (nowVisible != pinnedSectionVisible) {
+            pinnedSectionVisible = nowVisible
+            applyLiveToggleState(expanded = !nowVisible, animate = true)
+        }
+    }
+
+    private fun applyLiveToggleState(expanded: Boolean, animate: Boolean) {
+        val density = resources.displayMetrics.density
+        val targetScale = if (expanded) 1.14f else 1f
+        val targetContainerPadBottom = if (expanded) (28 * density).toInt() else (2 * density).toInt()
+
+        if (animate) {
+            binding.liveToggle.animate()
+                .scaleX(targetScale)
+                .scaleY(targetScale)
+                .setDuration(320)
+                .setInterpolator(DecelerateInterpolator())
+                .start()
+
+            ValueAnimator.ofInt(binding.liveToggleContainer.paddingBottom, targetContainerPadBottom)
+                .apply {
+                    duration = 320
+                    interpolator = DecelerateInterpolator()
+                    addUpdateListener {
+                        binding.liveToggleContainer.setPadding(
+                            binding.liveToggleContainer.paddingLeft,
+                            binding.liveToggleContainer.paddingTop,
+                            binding.liveToggleContainer.paddingRight,
+                            it.animatedValue as Int,
+                        )
+                    }
+                    start()
+                }
+        } else {
+            binding.liveToggle.scaleX = targetScale
+            binding.liveToggle.scaleY = targetScale
+            binding.liveToggleContainer.setPadding(
+                binding.liveToggleContainer.paddingLeft,
+                binding.liveToggleContainer.paddingTop,
+                binding.liveToggleContainer.paddingRight,
+                targetContainerPadBottom,
+            )
+        }
     }
 
     // --- Profile chips ---
