@@ -3,7 +3,7 @@
 **Real-time, on-device environmental sound awareness for deaf and hard-of-hearing users.**
 
 Submitted to the **Google × Qualcomm Hackathon — Track 2: LiteRT Classical Models (Audio)**.
-
+[DevPost](https://devpost.com/software/echoai-t7ol0v)
 echoAI continuously listens to the world around the user, classifies what it hears, tracks where each sound is coming from, ranks each one by safety urgency, and alerts the user through visual indicators and haptic feedback — all running entirely offline on the phone, with model inference accelerated on the Qualcomm Hexagon NPU via Google LiteRT.
 
 ---
